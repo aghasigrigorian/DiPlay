@@ -2599,10 +2599,15 @@ class CarPlayHostActivity : ComponentActivity() {
         appendLog(requestSummary)
         appendLog(support.details)
         appendLog(effectiveSummary)
+        val bluetooth = DiPlayBluetooth.resolve(this)
+        appendLog(
+            "bluetooth address advertised to the iPhone: " +
+                (bluetooth?.let { "${it.address} (${it.source})" } ?: "none readable, using the synthetic device id"),
+        )
         return AirPlayConfig(
             deviceName = "DiPlay",
             deviceId = DiPlayBootstrap.deviceId(airPlayIdentity),
-            btMac = DiPlayBluetooth.localAddress(this) ?: DiPlayBootstrap.deviceId(airPlayIdentity),
+            btMac = bluetooth?.address ?: DiPlayBootstrap.deviceId(airPlayIdentity),
             sourceVersion = "950.7.1",
             main = display,
             rightHandDrive = rightHandDrive,

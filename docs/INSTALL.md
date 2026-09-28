@@ -30,6 +30,10 @@ By default DiPlay starts only when you open it. Two opt-in settings under **Auto
 
 On Android 10 and newer, tap **Allow display over other apps** on the same page once; Android only lets an app open itself from the background with that permission. Without it, DiPlay shows a notification to tap instead. If your head unit has a background-app or autostart list in its own settings, allow DiPlay there too.
 
+## Phone calls
+
+Calls should run through CarPlay alone. If the car’s own call screen appears on top of CarPlay’s when a call comes in, the iPhone did not recognise the car’s Bluetooth address: open **Settings → Phone calls**, read the address from the car’s own Bluetooth settings and enter it under **Car Bluetooth address**, then reconnect. The home screen shows a warning while the car’s phone link stays connected during a CarPlay session.
+
 ## Connection recovery and reports
 
 If reinstalling left an old group, close other projection apps, then use **Settings → Wireless connection help → Reset CarPlay Wi-Fi**. DiPlay asks before removing an unrecognized Wi-Fi Direct group. Updating in place is preferable to uninstalling.

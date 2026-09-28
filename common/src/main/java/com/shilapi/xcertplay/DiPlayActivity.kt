@@ -49,6 +49,7 @@ class DiPlayActivity : ComponentActivity() {
     private var notificationTransport = true
     private var exportInProgress = false
     private var exportButton: Button? = null
+    private var callHint: TextView? = null
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
         connect(notificationTransport)
     }
@@ -153,6 +154,8 @@ class DiPlayActivity : ComponentActivity() {
         }
         card.addView(connectButton, matchButton())
         card.addView(label("Pair your iPhone with the car’s Bluetooth, then connect.\nKeep Bluetooth and Wi-Fi on.", 15, MUTED).apply { setPadding(0, dp(14), 0, 0) })
+        callHint = label("The car’s own phone link is still connected, so calls may show twice. Set the car’s Bluetooth address under Settings → Phone calls.", 15, WARNING).apply { setPadding(0, dp(14), 0, 0); visibility = View.GONE }
+        card.addView(callHint)
         if (carHotspotOff()) {
             card.addView(label("The car hotspot “${AirPlayPersistence.loadManualHotspotSsid(this)}” is off. Turn it on in the car settings before connecting.", 15, WARNING).apply { setPadding(0, dp(14), 0, 0) })
             card.addView(button("Open car hotspot settings", false) { openCarWifiSettings() }, matchButton(10, 56))
@@ -217,6 +220,7 @@ class DiPlayActivity : ComponentActivity() {
             card.addView(button("Choose iPhone · ${DiPlayPreferences.phoneName(this)}", false) { choosePhone() }, matchButton(12, 60))
         }
         section(content, "Wireless connection") { card -> wirelessLinkControls(card) }
+        section(content, "Phone calls") { card -> phoneCallControls(card) }
         section(content, "Display and performance") { card ->
             carPlaySizeControl(card)
             choice(card, "Resolution", listOf("Native", "80% · lighter load", "60% · lightest load"), listOf(10, 8, 6).indexOf(AirPlayPersistence.loadDisplayScaleTenths(this)).coerceAtLeast(0)) { AirPlayPersistence.saveDisplayScaleTenths(this, listOf(10, 8, 6)[it]) }
@@ -264,6 +268,49 @@ class DiPlayActivity : ComponentActivity() {
         section(content, "Made possible by open source") { card ->
             card.addView(label("Receiver based on xcertplay, licensed under GPL-3.0. DiPlay’s interface follows DiAuto’s design, licensed under AGPL-3.0.\n\nIncludes AndroidX, Bouncy Castle, JmDNS and SLF4J. Source and license notices accompany this release.\n\nCarPlay and the CarPlay icon belong to Apple Inc. DiPlay is an independent project.", 16, MUTED))
         }
+    }
+
+    /**
+     * CarPlay takes calls over only when the iPhone recognises the car's Bluetooth address in what
+     * DiPlay advertises. Firmware that hides the address gets a synthetic one, and the car's own
+     * phone app then rings next to CarPlay; the user can enter the address by hand.
+     */
+    private fun phoneCallControls(card: LinearLayout) {
+        val resolved = DiPlayBluetooth.resolve(this)
+        val manual = DiPlayPreferences.carBluetoothAddress(this)
+        card.addView(label("For calls to run through CarPlay only, the iPhone must recognise the car’s Bluetooth address. If the car’s own call screen appears next to CarPlay, enter the address shown in the car’s Bluetooth settings.", 16, MUTED))
+        val detected = when {
+            manual != null -> "Using your entry."
+            resolved != null -> "Detected automatically (${resolved.source}): ${resolved.address}"
+            else -> "This head unit does not reveal its address to apps. Enter it below."
+        }
+        card.addView(label(detected, 14, if (resolved == null) WARNING else MUTED).apply { setPadding(0, dp(10), 0, 0) })
+        card.addView(button("Car Bluetooth address · ${manual ?: "Auto"}", false) { editCarBluetoothAddress() }, matchButton(12, 60))
+        card.addView(label("Applies to the next connection.", 14, MUTED).apply { setPadding(0, dp(10), 0, 0) })
+    }
+
+    private fun editCarBluetoothAddress() {
+        val input = EditText(this).apply {
+            hint = "AA:BB:CC:DD:EE:FF"
+            setText(DiPlayPreferences.carBluetoothAddress(this@DiPlayActivity).orEmpty())
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+            setPadding(dp(24), dp(16), dp(24), dp(16))
+        }
+        AlertDialog.Builder(this).setTitle("Car Bluetooth address")
+            .setMessage("Find it in the car’s own Bluetooth settings, usually next to the car’s Bluetooth name.")
+            .setView(input)
+            .setPositiveButton("Save") { _, _ ->
+                val text = input.text.toString()
+                if (text.isBlank()) {
+                    DiPlayPreferences.saveCarBluetoothAddress(this, null); render(); return@setPositiveButton
+                }
+                val address = DiPlayBluetooth.normalize(text)
+                if (address == null) toast("That is not a Bluetooth address. Use six pairs like AA:BB:CC:DD:EE:FF.")
+                else { DiPlayPreferences.saveCarBluetoothAddress(this, address); render() }
+            }
+            .setNeutralButton("Use automatic") { _, _ -> DiPlayPreferences.saveCarBluetoothAddress(this, null); render() }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     // The car hotspot link needs the hotspot on; DiPlay only checks it (turning it on needs ADB-only permission).
@@ -527,6 +574,7 @@ class DiPlayActivity : ComponentActivity() {
             lastRunning = running
         }
         connectButton?.isEnabled = setupError == null
+        callHint?.visibility = if (CarPlayBackgroundSession.active && DiPlayBluetooth.handsFreeLinkConnected(this) == true) View.VISIBLE else View.GONE
     }
     private fun reportFileName() = "DiPlay-${SimpleDateFormat("yyyyMMdd-HHmmss-SSS", Locale.US).format(Date())}.txt"
 

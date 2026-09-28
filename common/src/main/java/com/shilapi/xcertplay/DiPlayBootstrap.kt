@@ -63,6 +63,11 @@ internal object DiPlayPreferences {
     fun saveAutoStartOnBluetooth(context: Context, value: Boolean) {
         prefs(context).edit().putBoolean("auto_start_bluetooth", value).apply()
     }
+    fun carBluetoothAddress(context: Context): String? =
+        prefs(context).getString("car_bluetooth_address", null)?.takeIf { it.isNotBlank() }
+    fun saveCarBluetoothAddress(context: Context, value: String?) {
+        prefs(context).edit().putString("car_bluetooth_address", value?.takeIf { it.isNotBlank() }).apply()
+    }
     fun lastAutoStartMillis(context: Context) = prefs(context).getLong("auto_start_last", 0L)
     fun saveLastAutoStartMillis(context: Context, value: Long) {
         prefs(context).edit().putLong("auto_start_last", value).apply()
