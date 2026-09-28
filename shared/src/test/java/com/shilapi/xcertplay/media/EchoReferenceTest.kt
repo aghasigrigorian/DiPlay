@@ -51,14 +51,42 @@ class EchoReferenceTest {
     }
 
     @Test
-    fun mismatchedRateOrStoppedReferenceGivesSilence() {
+    fun aDifferentPlaybackRateIsResampledOntoTheTimeline() {
+        EchoReference.start(8_000)
+        // 16 kHz source, 8 samples -> about 4 reference samples
+        EchoReference.push(pcm(0, 1000, 2000, 3000, 4000, 5000, 6000, 7000), 0, 16, 1, 16_000)
+        assertEquals(480L + 4L, EchoReference.lead()) // 60 ms margin at 8 kHz, plus the 4 resampled samples
+        assertTrue(EchoReference.describeSources().contains("16000 Hz mono"))
+        val out = ShortArray(4)
+        EchoReference.setLead(4)
+        EchoReference.pull(out, 4, 8_000)
+        assertTrue(out[3] > out[0])
+    }
+
+    @Test
+    fun aCaptureRateMismatchOrStoppedReferenceGivesSilence() {
         EchoReference.start(16_000)
-        EchoReference.push(pcm(7, 8), 0, 4, 1, 24_000)
+        EchoReference.push(pcm(7, 8), 0, 4, 1, 16_000)
         val out = ShortArray(2) { 1 }
         assertEquals(-1L, EchoReference.pull(out, 2, 24_000))
         assertArrayEquals(shortArrayOf(0, 0), out)
         EchoReference.stop()
         assertEquals(-1L, EchoReference.pull(out, 2, 16_000))
+    }
+
+    @Test
+    fun captureFarAheadOfPlaybackIsReanchored() {
+        EchoReference.start(1_000)
+        EchoReference.push(pcm(1), 0, 2, 1, 1_000)
+        val out = ShortArray(700)
+        EchoReference.pull(out, 700, 1_000) // 640 ms ahead of anything written
+        EchoReference.push(pcm(5, 6), 0, 4, 1, 1_000) // re-anchored: read position = start of this audio minus the 60 ms lead
+        val padding = ShortArray(60)
+        EchoReference.pull(padding, 60, 1_000)
+        assertEquals(1.toShort(), padding[59])
+        val next = ShortArray(2)
+        EchoReference.pull(next, 2, 1_000)
+        assertArrayEquals(shortArrayOf(5, 6), next)
     }
 
     @Test

@@ -13,12 +13,19 @@ internal object EchoReference {
 
     /** Microphone capture latency plus the cabin, added on top of the player's buffered audio. */
     private const val MARGIN_MILLIS = 60
+
+    /** How far capture may run ahead of playback before the read position is re-anchored. */
+    private const val REANCHOR_MILLIS = 500
     private val lock = Any()
     private var rate = 0
     private var buffer = ShortArray(0)
     private var writePos = 0L
     private var readPos = 0L
     private var pendingPrefill = false
+    private var targetLead = 0L
+    private var resamplePhase = 0.0
+    private var resampleLast = 0
+    private val sources = linkedMapOf<String, Long>()
 
     @Volatile var enabled = false
         private set
@@ -35,8 +42,16 @@ internal object EchoReference {
             readPos = 0L
             pendingPrefill = true
             initialLeadSamples = 0
+            resamplePhase = 0.0
+            resampleLast = 0
+            sources.clear()
             enabled = true
         }
+    }
+
+    /** Which streams fed the reference this call and how many samples each contributed (after resampling). */
+    fun describeSources(): String = synchronized(lock) {
+        if (sources.isEmpty()) "no reference audio" else sources.entries.joinToString(", ") { "${it.key}: ${it.value * 1000 / rate.coerceAtLeast(1)} ms" }
     }
 
     fun stop() {
@@ -51,29 +66,62 @@ internal object EchoReference {
      * Called by the renderer with the PCM it just wrote; interleaved 16-bit little-endian.
      * [queuedFrames] is how much audio the player still holds ahead of the speakers at this moment.
      */
-    fun push(pcm: ByteArray, offset: Int, length: Int, channels: Int, sampleRate: Int, queuedFrames: Int = 0) {
-        if (!enabled || channels <= 0) return
+    fun push(pcm: ByteArray, offset: Int, length: Int, channels: Int, sampleRate: Int, queuedFrames: Int = 0, label: String = "") {
+        if (!enabled || channels <= 0 || sampleRate <= 0) return
         synchronized(lock) {
-            if (rate != sampleRate || buffer.isEmpty()) return
+            if (buffer.isEmpty()) return
             if (pendingPrefill) {
                 pendingPrefill = false
-                val lead = (queuedFrames.coerceAtLeast(0) + rate * MARGIN_MILLIS / 1000).coerceAtMost(buffer.size / 2)
+                val lead = (queuedFrames.coerceAtLeast(0) * rate / sampleRate + rate * MARGIN_MILLIS / 1000).coerceAtMost(buffer.size / 2)
                 initialLeadSamples = lead
+                targetLead = lead.toLong()
                 readPos = writePos - lead
+            } else if (writePos - readPos < -(rate.toLong() * REANCHOR_MILLIS / 1000)) {
+                // Capture ran far ahead while the far end was quiet or the reference stalled: treat
+                // this audio as a fresh start so it is not read as if it were in the past.
+                readPos = writePos - targetLead
             }
             val frameBytes = 2 * channels
+            val frames = length / frameBytes
+            if (frames <= 0) return
+            val mono = ShortArray(frames)
             var index = offset
-            val end = offset + length - (length % frameBytes)
-            while (index < end) {
+            for (f in 0 until frames) {
                 var sum = 0
                 repeat(channels) {
                     sum += ((pcm[index].toInt() and 0xff) or (pcm[index + 1].toInt() shl 8)).toShort().toInt()
                     index += 2
                 }
-                buffer[(writePos % buffer.size).toInt()] = (sum / channels).toShort()
-                writePos++
+                mono[f] = (sum / channels).toShort()
             }
+            val before = writePos
+            if (sampleRate == rate) {
+                for (sample in mono) append(sample)
+            } else {
+                // Linear resampling to the reference rate; the phase carries across pushes so the
+                // timeline stays continuous. Good enough for a reference the filter adapts to.
+                val ratio = sampleRate.toDouble() / rate
+                var pos = resamplePhase
+                while (pos < frames) {
+                    val i = pos.toInt()
+                    val frac = pos - i
+                    val a = if (i == 0) resampleLast else mono[i - 1].toInt()
+                    val b = mono[i].toInt()
+                    // pos in (i-1, i]: interpolate between the previous and current source sample
+                    append((a + (b - a) * frac).toInt().coerceIn(-32768, 32767).toShort())
+                    pos += ratio
+                }
+                resamplePhase = pos - frames
+                resampleLast = mono[frames - 1].toInt()
+            }
+            val key = "$label ${sampleRate} Hz ${if (channels >= 2) "stereo" else "mono"}"
+            sources[key] = (sources[key] ?: 0L) + (writePos - before)
         }
+    }
+
+    private fun append(sample: Short) {
+        buffer[(writePos % buffer.size).toInt()] = sample
+        writePos++
     }
 
     /**
@@ -102,7 +150,10 @@ internal object EchoReference {
 
     /** Moves the read position so the reference trails the write position by [samples]. */
     fun setLead(samples: Long) {
-        synchronized(lock) { readPos = writePos - samples.coerceIn(0L, buffer.size.toLong() / 2) }
+        synchronized(lock) {
+            targetLead = samples.coerceIn(0L, buffer.size.toLong() / 2)
+            readPos = writePos - targetLead
+        }
     }
 
     /** Copies [count] samples ending just before [endPos] into [out]; unwritten positions are silence. */

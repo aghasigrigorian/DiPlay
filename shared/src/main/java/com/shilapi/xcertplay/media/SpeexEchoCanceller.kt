@@ -68,7 +68,7 @@ internal class SpeexEchoCanceller private constructor(
     fun stats(): String {
         val percent = if (framesProcessed == 0) 0 else framesWithoutReference * 100 / framesProcessed
         val delay = if (measuredDelayMs < 0) "echo delay not measured" else "echo delay ≈ $measuredDelayMs ms (${"%.2f".format(measuredConfidence)})"
-        return "$delay · lead ${EchoReference.lead() * 1000 / sampleRate.coerceAtLeast(1)} ms · realigned $realignments× · frames $framesProcessed, $percent% silent reference"
+        return "$delay · lead ${EchoReference.lead() * 1000 / sampleRate.coerceAtLeast(1)} ms · realigned $realignments× · frames $framesProcessed, $percent% silent reference · mic $sampleRate Hz · reference from ${EchoReference.describeSources()}"
     }
 
     override fun close() {

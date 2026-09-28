@@ -892,7 +892,7 @@ private class AudioRenderer(
             framesWrittenTotal += count / (2 * format.channels.coerceAtLeast(1))
             if (EchoReference.enabled && format.audioType in ECHO_REFERENCE_TYPES) {
                 val queued = (framesWrittenTotal - runCatching { track.playbackHeadPosition.toLong() }.getOrDefault(0L)).coerceAtLeast(0L)
-                EchoReference.push(data, offset + written, count, format.channels, format.sampleRate, queued.toInt())
+                EchoReference.push(data, offset + written, count, format.channels, format.sampleRate, queued.toInt(), format.audioType)
             }
             written += count
             bufferProgress.written(count)
