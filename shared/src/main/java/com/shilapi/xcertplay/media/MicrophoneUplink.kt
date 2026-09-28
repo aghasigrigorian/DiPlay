@@ -67,7 +67,10 @@ internal class MicrophoneUplink(
         }
 
         val source = when (config.audioType) {
-            "telephony" -> MediaRecorder.AudioSource.VOICE_COMMUNICATION
+            // The app's own canceller wants the raw microphone: the firmware's voice chain adds gain
+            // control and its own half-working echo processing that the adaptive filter cannot follow.
+            "telephony" -> if (echoCancellation == EchoCancellationMode.APP) MediaRecorder.AudioSource.VOICE_RECOGNITION
+                else MediaRecorder.AudioSource.VOICE_COMMUNICATION
             "speechrecognition" -> MediaRecorder.AudioSource.VOICE_RECOGNITION
             else -> MediaRecorder.AudioSource.MIC
         }
@@ -125,8 +128,10 @@ internal class MicrophoneUplink(
         socket = nextSocket
         opusEncoder = nextEncoder
         if (config.audioType == "telephony") {
-            if (echoCancellation != EchoCancellationMode.OFF) {
+            if (echoCancellation == EchoCancellationMode.AUTO) {
                 effects = attachVoiceEffects(nextRecorder.audioSessionId)
+                enterCommunicationMode()
+            } else if (echoCancellation == EchoCancellationMode.APP) {
                 enterCommunicationMode()
             }
             val platformOn = effects.any { it is AcousticEchoCanceler }
@@ -142,9 +147,10 @@ internal class MicrophoneUplink(
                 null
             }
             softwareCanceller = canceller
-            val summary = "car microphone · head-unit echo canceller ${if (platformOn) "on" else "unavailable"}" +
+            val summary = "car microphone (${if (source == MediaRecorder.AudioSource.VOICE_RECOGNITION) "raw" else "voice-processed"})" +
+                " · head-unit echo canceller ${if (platformOn) "on" else if (echoCancellation == EchoCancellationMode.AUTO) "unavailable" else "off"}" +
                 " · app echo canceller ${if (canceller != null) "on" else if (wantSoftware) "unavailable" else "off"}" +
-                " · noise suppressor ${if (effects.any { it is NoiseSuppressor }) "on" else "unavailable"}"
+                " · noise suppressor ${if (effects.any { it is NoiseSuppressor }) "head unit" else if (canceller != null) "app" else "off"}"
             CallMicrophoneStatus.lastCallSummary = summary
             Log.i(TAG, "microphone voice processing: $summary")
         }
@@ -322,7 +328,12 @@ internal class MicrophoneUplink(
         currentEffects.forEach { runCatching { it.release() } }
         val currentCanceller = softwareCanceller
         softwareCanceller = null
-        currentCanceller?.close()
+        if (currentCanceller != null) {
+            val stats = currentCanceller.stats()
+            CallMicrophoneStatus.lastCallSummary = (CallMicrophoneStatus.lastCallSummary ?: "") +
+                " · reference lead ${EchoReference.prefillSamples * 1000 / config.sampleRate.coerceAtLeast(1)} ms · $stats"
+            currentCanceller.close()
+        }
         EchoReference.stop()
         leaveCommunicationMode()
         val currentRecorder = recorder

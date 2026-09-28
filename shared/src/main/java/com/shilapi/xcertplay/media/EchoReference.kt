@@ -3,18 +3,28 @@ package com.shilapi.xcertplay.media
 /**
  * The far end's voice as it is written to the car speakers, kept briefly so the app's echo canceller
  * knows what to subtract from the microphone. A short FIFO of 16-bit mono samples: the renderer pushes
- * what it plays, the microphone uplink pulls one frame per captured frame. Cleared when a call starts,
- * so the reference runs roughly in step with capture and the canceller's tail covers the rest.
+ * what it writes, the microphone uplink pulls one frame per captured frame. When a call starts the FIFO
+ * is cleared and, on the first write, padded with as much silence as the player still holds in its
+ * buffer plus a small margin, so the reference lines up with what actually leaves the speakers and the
+ * canceller's tail only has to cover the cabin.
  */
 internal object EchoReference {
     private const val CAPACITY_MILLIS = 2_000
+
+    /** Microphone capture latency plus the cabin: added on top of the player's buffered audio. */
+    private const val MARGIN_MILLIS = 60
     private val lock = Any()
     private var rate = 0
     private var buffer = ShortArray(0)
     private var head = 0
     private var size = 0
+    private var pendingPrefill = false
 
     @Volatile var enabled = false
+        private set
+
+    /** Silence inserted at the start of the current call to line up with playback, in samples. */
+    @Volatile var prefillSamples = 0
         private set
 
     fun start(sampleRate: Int) {
@@ -23,6 +33,8 @@ internal object EchoReference {
             buffer = ShortArray(sampleRate * CAPACITY_MILLIS / 1000)
             head = 0
             size = 0
+            pendingPrefill = true
+            prefillSamples = 0
             enabled = true
         }
     }
@@ -35,11 +47,21 @@ internal object EchoReference {
         }
     }
 
-    /** Called by the renderer with the PCM it just wrote; interleaved 16-bit little-endian. */
-    fun push(pcm: ByteArray, offset: Int, length: Int, channels: Int, sampleRate: Int) {
+    /**
+     * Called by the renderer with the PCM it just wrote; interleaved 16-bit little-endian.
+     * [queuedFrames] is how much audio the player still holds ahead of the speakers at this moment.
+     */
+    fun push(pcm: ByteArray, offset: Int, length: Int, channels: Int, sampleRate: Int, queuedFrames: Int = 0) {
         if (!enabled || channels <= 0) return
         synchronized(lock) {
             if (rate != sampleRate || buffer.isEmpty()) return
+            if (pendingPrefill) {
+                pendingPrefill = false
+                val silence = (queuedFrames.coerceAtLeast(0) + rate * MARGIN_MILLIS / 1000)
+                    .coerceAtMost(buffer.size * 3 / 4)
+                repeat(silence) { write(0) }
+                prefillSamples = silence
+            }
             val frameBytes = 2 * channels
             var index = offset
             val end = offset + length - (length % frameBytes)

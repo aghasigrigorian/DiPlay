@@ -494,6 +494,9 @@ private fun MediaFormat.intOrNull(key: String): Int? =
     }
 
 /** Decodes AAC-LC/Opus to PCM and plays it, or plays wired LPCM directly. */
+/** Streams that carry the far end's voice during a call; what they play is what the microphone echoes. */
+private val ECHO_REFERENCE_TYPES = setOf("telephony", "default", "compatibility")
+
 private class AudioRenderer(
     val format: AudioFormat,
     private val advancedAudioChannelMapping: Boolean,
@@ -532,6 +535,7 @@ private class AudioRenderer(
     private var underrunsAtPlaybackStart = 0
     private var lastPcmWriteNs = 0L
     private var rebufferCount = 0
+    private var framesWrittenTotal = 0L
     private val thread = Thread(::run, "carplay-audio").apply { isDaemon = true }
 
     fun start() {
@@ -880,7 +884,11 @@ private class AudioRenderer(
             val count = track.write(data, offset + written, writeLength, AudioTrack.WRITE_BLOCKING)
             maxWriteMs = maxOf(maxWriteMs, (System.nanoTime() - writeStarted) / 1_000_000L)
             if (count <= 0) break
-            if (format.audioType == "telephony") EchoReference.push(data, offset + written, count, format.channels, format.sampleRate)
+            framesWrittenTotal += count / (2 * format.channels.coerceAtLeast(1))
+            if (EchoReference.enabled && format.audioType in ECHO_REFERENCE_TYPES) {
+                val queued = (framesWrittenTotal - runCatching { track.playbackHeadPosition.toLong() }.getOrDefault(0L)).coerceAtLeast(0L)
+                EchoReference.push(data, offset + written, count, format.channels, format.sampleRate, queued.toInt())
+            }
             written += count
             bufferProgress.written(count)
             lastPcmWriteNs = System.nanoTime()

@@ -56,12 +56,26 @@ class EchoReferenceTest {
     }
 
     @Test
+    fun firstWriteOfACallIsPaddedWithWhatThePlayerStillHolds() {
+        EchoReference.start(1_000) // margin = 60 samples at this rate
+        EchoReference.push(pcm(9), 0, 2, 1, 1_000, queuedFrames = 10)
+        assertEquals(70, EchoReference.prefillSamples)
+        assertEquals(71, EchoReference.queued())
+        val out = ShortArray(71)
+        assertEquals(71, EchoReference.pull(out, 71, 1_000))
+        assertEquals(0.toShort(), out[0])
+        assertEquals(9.toShort(), out[70])
+        EchoReference.push(pcm(3), 0, 2, 1, 1_000, queuedFrames = 500) // no second padding
+        assertEquals(1, EchoReference.queued())
+    }
+
+    @Test
     fun fullBufferKeepsTheNewestSamples() {
         EchoReference.start(1_000) // 2 000 samples of capacity
         val many = IntArray(2_100) { it }
         EchoReference.push(pcm(*many), 0, many.size * 2, 1, 1_000)
         val out = ShortArray(1)
         assertEquals(1, EchoReference.pull(out, 1, 1_000))
-        assertEquals(100.toShort(), out[0])
+        assertEquals(160.toShort(), out[0]) // 2 100 samples + 60 of margin padding, capacity 2 000
     }
 }

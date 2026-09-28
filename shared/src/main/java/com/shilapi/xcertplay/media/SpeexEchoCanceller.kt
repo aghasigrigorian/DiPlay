@@ -39,6 +39,12 @@ internal class SpeexEchoCanceller private constructor(
         }
     }
 
+    /** One line for the settings page: how many frames ran and how many had no reference to subtract. */
+    fun stats(): String {
+        val percent = if (framesProcessed == 0) 0 else framesWithoutReference * 100 / framesProcessed
+        return "frames $framesProcessed, $percent% without reference, queued ${EchoReference.queued()}"
+    }
+
     override fun close() {
         val current = handle
         handle = 0L
