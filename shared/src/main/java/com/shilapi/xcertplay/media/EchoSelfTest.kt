@@ -26,7 +26,14 @@ class EchoSelfTest(private val audioManager: AudioManager?) {
         val confidence: Double,
         val removalDb: Double?,
         val calibrated: Boolean,
-    )
+        /** How much audio the player held ahead of the speakers during the test, on average. */
+        val playbackLatencyMillis: Int,
+        /** The far end lined up with [raw] sample for sample, for warm starts. */
+        val alignedFar: ByteArray,
+    ) {
+        /** The echo delay counted from the moment sound leaves the player. */
+        val afterPlaybackMillis: Int get() = (delayMillis - playbackLatencyMillis).coerceAtLeast(0)
+    }
 
     /** [clip] is 16-bit little-endian mono PCM at [SAMPLE_RATE]. Blocks for about 30 s; call off the main thread. */
     fun run(clip: ByteArray, onStatus: (String) -> Unit): Result {
@@ -70,6 +77,8 @@ class EchoSelfTest(private val audioManager: AudioManager?) {
             track.play()
             val raw = ByteArrayOutputStream()
             val writePositions = ArrayList<Long>()
+            var queuedSum = 0L
+            var queuedCount = 0
             val playing = AtomicBoolean(true)
             val player = Thread({
                 try {
@@ -81,6 +90,8 @@ class EchoSelfTest(private val audioManager: AudioManager?) {
                         if (n <= 0) break
                         framesWritten += n / 2
                         val queued = (framesWritten - runCatching { track.playbackHeadPosition.toLong() }.getOrDefault(0L)).coerceAtLeast(0L)
+                        queuedSum += queued
+                        queuedCount++
                         EchoReference.push(data, offset, n, 1, SAMPLE_RATE, queued.toInt(), "echo test")
                         offset += n
                     }
@@ -115,7 +126,8 @@ class EchoSelfTest(private val audioManager: AudioManager?) {
             runCatching { record.stop() }
             runCatching { track.stop() }
             onStatus("Echo test: measuring the echo delay…")
-            return analyse(raw.toByteArray(), writePositions, farEnd, onStatus).also { lastResult = it }
+            val latencyMillis = if (queuedCount == 0) 0 else (queuedSum / queuedCount * 1000 / SAMPLE_RATE).toInt()
+            return analyse(raw.toByteArray(), writePositions, farEnd, latencyMillis, onStatus).also { lastResult = it }
         } finally {
             running.set(false)
             record.release()
@@ -134,7 +146,7 @@ class EchoSelfTest(private val audioManager: AudioManager?) {
      * canceller over the recording with the reference placed just ahead of that echo — one warm-up
      * pass so the filter has settled, one measured pass that produces the cleaned recording.
      */
-    private fun analyse(raw: ByteArray, writePositions: List<Long>, farEnd: ShortArray, onStatus: (String) -> Unit): Result {
+    private fun analyse(raw: ByteArray, writePositions: List<Long>, farEnd: ShortArray, latencyMillis: Int, onStatus: (String) -> Unit): Result {
         val mic = toShorts(raw)
         // Both streams run on the same audio clock, so the far end is lined up once, from the write
         // position at the first captured frame, and then advances sample for sample with the capture.
@@ -174,10 +186,12 @@ class EchoSelfTest(private val audioManager: AudioManager?) {
                 append(if (confident) "echo delay ≈ $delayMillis ms (correlation ${"%.2f".format(estimate.confidence)}, peak ${"%.1f".format(estimate.prominence)}× the noise, calibrated)" else "no clear echo path found (best guess $delayMillis ms, correlation ${"%.2f".format(estimate.confidence)}, peak ${"%.1f".format(estimate.prominence)}×)")
                 append(" · canceller removes ")
                 append(removal?.let { "${"%.1f".format(it)} dB" } ?: "nothing (no far-end activity)")
-                append(" · tail $tail ms · ${mic.size / SAMPLE_RATE} s recorded")
+                append(" · tail $tail ms · player held ${latencyMillis} ms · ${mic.size / SAMPLE_RATE} s recorded")
             }
             Log.i(TAG, "echo test: $summary")
-            return Result(summary, raw, cleaned, SAMPLE_RATE, delayMillis, estimate.confidence, removal, confident)
+            val alignedBytes = ByteArray(aligned.size * 2)
+            for (i in aligned.indices) { val v = aligned[i].toInt(); alignedBytes[2 * i] = (v and 0xff).toByte(); alignedBytes[2 * i + 1] = ((v shr 8) and 0xff).toByte() }
+            return Result(summary, raw, cleaned, SAMPLE_RATE, delayMillis, estimate.confidence, removal, confident, latencyMillis, alignedBytes)
         } finally {
             canceller.close()
         }

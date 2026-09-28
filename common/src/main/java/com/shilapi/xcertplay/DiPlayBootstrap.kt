@@ -76,6 +76,12 @@ internal object DiPlayPreferences {
     fun saveEchoDelayMillis(context: Context, value: Int?) {
         prefs(context).edit().putInt("echo_delay_ms", value ?: -1).apply()
     }
+    fun echoAfterPlaybackMillis(context: Context): Int = prefs(context).getInt("echo_after_playback_ms", -1).coerceAtLeast(0)
+    fun saveEchoAfterPlaybackMillis(context: Context, value: Int) {
+        prefs(context).edit().putInt("echo_after_playback_ms", value).apply()
+    }
+    fun echoCalibration(context: Context): com.shilapi.xcertplay.media.EchoWarmStart.Calibration? =
+        echoDelayMillis(context)?.let { com.shilapi.xcertplay.media.EchoWarmStart.Calibration(it, echoAfterPlaybackMillis(context), context.filesDir) }
     fun rememberCallVolume(context: Context) = prefs(context).getBoolean("remember_call_volume", true)
     fun saveRememberCallVolume(context: Context, value: Boolean) {
         prefs(context).edit().putBoolean("remember_call_volume", value).apply()

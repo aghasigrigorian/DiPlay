@@ -43,8 +43,12 @@ class AndroidMediaSink(
     private val audioManager: android.media.AudioManager? = null,
     private val echoCancellation: EchoCancellationMode = EchoCancellationMode.AUTO,
     private val callVolumeMemory: CallVolumeMemory? = null,
-    private val calibratedEchoDelayMillis: Int? = null,
+    private val calibration: EchoWarmStart.Calibration? = null,
 ) : MediaSink {
+    init {
+        // Learn the car's echo path before the first call so the canceller does not start blank.
+        EchoWarmStart.prepareAsync(calibration, WARM_START_RATE, WARM_START_FRAME)
+    }
     private val screenStateLock = Any()
     private val activeScreenTypes = mutableSetOf<Int>()
     private val defaultSurface = surface
@@ -135,7 +139,7 @@ class AndroidMediaSink(
     }
 
     override fun onMicrophoneStarted(type: Int, config: MicrophoneConfig) {
-        val uplink = microphoneUplinks.computeIfAbsent(type) { MicrophoneUplink(config, audioManager, echoCancellation, callVolumeMemory, calibratedEchoDelayMillis) }
+        val uplink = microphoneUplinks.computeIfAbsent(type) { MicrophoneUplink(config, audioManager, echoCancellation, callVolumeMemory, calibration) }
         if (!uplink.start()) microphoneUplinks.remove(type, uplink)
     }
 
@@ -496,6 +500,10 @@ private fun MediaFormat.intOrNull(key: String): Int? =
     }
 
 /** Decodes AAC-LC/Opus to PCM and plays it, or plays wired LPCM directly. */
+/** CarPlay telephony on the tested cars: 48 kHz mono, 20 ms frames. A different call format simply starts cold. */
+private const val WARM_START_RATE = 48_000
+private const val WARM_START_FRAME = 960
+
 /** Streams that carry the far end's voice during a call; what they play is what the microphone echoes. */
 private val ECHO_REFERENCE_TYPES = setOf("telephony", "default", "compatibility")
 

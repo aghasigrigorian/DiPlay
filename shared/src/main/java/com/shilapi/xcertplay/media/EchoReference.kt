@@ -23,6 +23,7 @@ internal object EchoReference {
     private var readPos = 0L
     private var pendingPrefill = false
     private var fixedLead: Int? = null
+    private var afterPlaybackLead: Int? = null
     private var targetLead = 0L
     private var resamplePhase = 0.0
     private var resampleLast = 0
@@ -35,10 +36,16 @@ internal object EchoReference {
     @Volatile var initialLeadSamples = 0
         private set
 
-    /** [fixedLeadSamples] overrides the buffer-based guess with a calibrated echo delay. */
-    fun start(sampleRate: Int, fixedLeadSamples: Int? = null) {
+    /**
+     * [fixedLeadSamples] overrides the buffer-based guess with a calibrated echo delay counted from
+     * the write; [afterPlaybackLeadSamples] instead adds a calibrated delay counted from the moment
+     * sound leaves the player to whatever the player holds at the first write, which survives a
+     * different playback buffer between the echo test and a call.
+     */
+    fun start(sampleRate: Int, fixedLeadSamples: Int? = null, afterPlaybackLeadSamples: Int? = null) {
         synchronized(lock) {
             fixedLead = fixedLeadSamples
+            afterPlaybackLead = afterPlaybackLeadSamples
             rate = sampleRate
             buffer = ShortArray(sampleRate * CAPACITY_MILLIS / 1000)
             writePos = 0L
@@ -75,7 +82,8 @@ internal object EchoReference {
             if (buffer.isEmpty()) return
             if (pendingPrefill) {
                 pendingPrefill = false
-                val lead = (fixedLead ?: (queuedFrames.coerceAtLeast(0) * rate / sampleRate + rate * MARGIN_MILLIS / 1000))
+                val queued = queuedFrames.coerceAtLeast(0) * rate / sampleRate
+                val lead = (afterPlaybackLead?.let { queued + it } ?: fixedLead ?: (queued + rate * MARGIN_MILLIS / 1000))
                     .coerceIn(0, buffer.size / 2)
                 initialLeadSamples = lead
                 targetLead = lead.toLong()
