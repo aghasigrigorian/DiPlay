@@ -50,6 +50,10 @@ class DiPlayActivity : ComponentActivity() {
     private var exportInProgress = false
     private var exportButton: Button? = null
     private var callHint: TextView? = null
+    private var echoTestStatus: TextView? = null
+    private val microphonePermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) runEchoTest() else permissionHelp("Microphone", "Allow the microphone to run the echo test and to use the car’s microphone for calls.")
+    }
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
         connect(notificationTransport)
     }
@@ -300,6 +304,39 @@ class DiPlayActivity : ComponentActivity() {
             modes.indexOf(DiPlayPreferences.echoCancellation(this)).coerceAtLeast(0)) { DiPlayPreferences.saveEchoCancellation(this, modes[it]) }
         card.addView(label("Stops the other party hearing themselves through the car speakers. Changes apply to the next connection.", 14, MUTED).apply { setPadding(0, dp(10), 0, 0) })
         toggle(card, "Remember call volume separately", "Like the car's own phone: the knob sets a call level that is kept for the next call, and the music comes back at its old level when the call ends. The car's call stream runs at its maximum during a call.", DiPlayPreferences.rememberCallVolume(this)) { DiPlayPreferences.saveRememberCallVolume(this, it) }
+        card.addView(label("Echo test without a call: plays a recorded voice through the car speakers on the call route for about 25 seconds while the microphone listens, runs the app’s echo canceller exactly as during a call, and reports how much of the voice it removed. Park, disconnect CarPlay, keep quiet.", 15, TEXT).apply { setPadding(0, dp(20), 0, 0) })
+        val last = com.shilapi.xcertplay.media.EchoSelfTest.lastResult
+        echoTestStatus = label(last?.let { "Last test: ${it.summary}" } ?: "No test yet.", 14, MUTED).apply { setPadding(0, dp(10), 0, 0) }
+        card.addView(echoTestStatus)
+        card.addView(button(if (com.shilapi.xcertplay.media.EchoSelfTest.isRunning) "Echo test running…" else "Run echo test", true) { runEchoTest() }, matchButton(12, 60))
+        if (last != null) {
+            card.addView(button("Play what the caller would hear", false) { playRecording(last.cleaned, last.sampleRate, "cleaned microphone") }, matchButton(10, 60))
+            card.addView(button("Play the raw microphone", false) { playRecording(last.raw, last.sampleRate, "raw microphone") }, matchButton(10, 60))
+        }
+    }
+
+    private fun runEchoTest() {
+        if (CarPlayBackgroundSession.hasSession()) { toast("Disconnect CarPlay first, then run the echo test."); return }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) { microphonePermission.launch(Manifest.permission.RECORD_AUDIO); return }
+        if (com.shilapi.xcertplay.media.EchoSelfTest.isRunning) { toast("The echo test is already running."); return }
+        echoTestStatus?.text = "Echo test starting…"
+        Thread({
+            try {
+                val wav = assets.open("echo-test/voice-48k.wav").use { it.readBytes() }
+                val clip = com.shilapi.xcertplay.media.EchoSelfTest.pcmFromWav(wav, com.shilapi.xcertplay.media.EchoSelfTest.SAMPLE_RATE)
+                val manager = getSystemService(android.media.AudioManager::class.java)
+                com.shilapi.xcertplay.media.EchoSelfTest(manager).run(clip) { status -> runOnUiThread { echoTestStatus?.text = status } }
+                runOnUiThread { toast("Echo test done."); if (page == "settings") render() }
+            } catch (error: Exception) {
+                runOnUiThread { echoTestStatus?.text = "Echo test failed: ${error.message}"; toast("Echo test failed: ${error.message}") }
+            }
+        }, "echo-test").apply { isDaemon = true; start() }
+    }
+
+    private fun playRecording(pcm: ByteArray, sampleRate: Int, what: String) {
+        if (pcm.isEmpty()) { toast("Nothing recorded."); return }
+        toast("Playing the $what (${pcm.size / (sampleRate * 2)} s)…")
+        Thread({ runCatching { com.shilapi.xcertplay.media.EchoSelfTest.play(pcm, sampleRate) } }, "echo-test-play").apply { isDaemon = true; start() }
     }
 
     private fun editCarBluetoothAddress() {
