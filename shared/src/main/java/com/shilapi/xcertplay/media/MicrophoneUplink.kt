@@ -349,7 +349,7 @@ internal class MicrophoneUplink(
         if (currentCanceller != null) {
             val stats = currentCanceller.stats()
             CallMicrophoneStatus.lastCallSummary = (CallMicrophoneStatus.lastCallSummary ?: "") +
-                " · reference lead ${EchoReference.prefillSamples * 1000 / config.sampleRate.coerceAtLeast(1)} ms · $stats"
+                " · start lead ${EchoReference.initialLeadSamples * 1000 / config.sampleRate.coerceAtLeast(1)} ms · $stats"
             currentCanceller.close()
         }
         EchoReference.stop()

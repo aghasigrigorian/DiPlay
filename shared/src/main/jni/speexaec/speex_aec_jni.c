@@ -25,7 +25,7 @@ Java_com_shilapi_xcertplay_media_SpeexEchoCanceller_nativeCreate(JNIEnv *env, jc
     speex_echo_ctl(h->echo, SPEEX_ECHO_SET_SAMPLING_RATE, &rate);
     h->preprocess = speex_preprocess_state_init(frameSize, sampleRate);
     if (h->preprocess != NULL) {
-        int on = 1, suppress = -40, suppressActive = -15;
+        int on = 1, suppress = -50, suppressActive = -30;
         speex_preprocess_ctl(h->preprocess, SPEEX_PREPROCESS_SET_ECHO_STATE, h->echo);
         speex_preprocess_ctl(h->preprocess, SPEEX_PREPROCESS_SET_DENOISE, &on);
         speex_preprocess_ctl(h->preprocess, SPEEX_PREPROCESS_SET_ECHO_SUPPRESS, &suppress);

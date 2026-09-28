@@ -1,40 +1,40 @@
 package com.shilapi.xcertplay.media
 
 /**
- * The far end's voice as it is written to the car speakers, kept briefly so the app's echo canceller
- * knows what to subtract from the microphone. A short FIFO of 16-bit mono samples: the renderer pushes
- * what it writes, the microphone uplink pulls one frame per captured frame. When a call starts the FIFO
- * is cleared and, on the first write, padded with as much silence as the player still holds in its
- * buffer plus a small margin, so the reference lines up with what actually leaves the speakers and the
- * canceller's tail only has to cover the cabin.
+ * The far end's voice as DiPlay writes it to the car speakers, kept on a timeline so the app's echo
+ * canceller can read it at any offset. The renderer appends what it writes; the microphone uplink
+ * reads one frame per captured frame from a read position that trails the write position by the
+ * current *lead*. The lead starts at whatever the player still held in its buffer plus a margin and
+ * is corrected during the call by [EchoDelayEstimator], which measures how long the speakers' sound
+ * takes to come back through the microphone.
  */
 internal object EchoReference {
-    private const val CAPACITY_MILLIS = 2_000
+    private const val CAPACITY_MILLIS = 4_000
 
-    /** Microphone capture latency plus the cabin: added on top of the player's buffered audio. */
+    /** Microphone capture latency plus the cabin, added on top of the player's buffered audio. */
     private const val MARGIN_MILLIS = 60
     private val lock = Any()
     private var rate = 0
     private var buffer = ShortArray(0)
-    private var head = 0
-    private var size = 0
+    private var writePos = 0L
+    private var readPos = 0L
     private var pendingPrefill = false
 
     @Volatile var enabled = false
         private set
 
-    /** Silence inserted at the start of the current call to line up with playback, in samples. */
-    @Volatile var prefillSamples = 0
+    /** Silence assumed between writing a sample and hearing it, in samples, at the start of the call. */
+    @Volatile var initialLeadSamples = 0
         private set
 
     fun start(sampleRate: Int) {
         synchronized(lock) {
             rate = sampleRate
             buffer = ShortArray(sampleRate * CAPACITY_MILLIS / 1000)
-            head = 0
-            size = 0
+            writePos = 0L
+            readPos = 0L
             pendingPrefill = true
-            prefillSamples = 0
+            initialLeadSamples = 0
             enabled = true
         }
     }
@@ -42,8 +42,8 @@ internal object EchoReference {
     fun stop() {
         synchronized(lock) {
             enabled = false
-            size = 0
-            head = 0
+            writePos = 0L
+            readPos = 0L
         }
     }
 
@@ -57,10 +57,9 @@ internal object EchoReference {
             if (rate != sampleRate || buffer.isEmpty()) return
             if (pendingPrefill) {
                 pendingPrefill = false
-                val silence = (queuedFrames.coerceAtLeast(0) + rate * MARGIN_MILLIS / 1000)
-                    .coerceAtMost(buffer.size * 3 / 4)
-                repeat(silence) { write(0) }
-                prefillSamples = silence
+                val lead = (queuedFrames.coerceAtLeast(0) + rate * MARGIN_MILLIS / 1000).coerceAtMost(buffer.size / 2)
+                initialLeadSamples = lead
+                readPos = writePos - lead
             }
             val frameBytes = 2 * channels
             var index = offset
@@ -71,38 +70,50 @@ internal object EchoReference {
                     sum += ((pcm[index].toInt() and 0xff) or (pcm[index + 1].toInt() shl 8)).toShort().toInt()
                     index += 2
                 }
-                write((sum / channels).toShort())
+                buffer[(writePos % buffer.size).toInt()] = (sum / channels).toShort()
+                writePos++
             }
         }
     }
 
-    /** Fills [out] with the oldest [count] samples; missing samples are silence. Returns how many were real. */
-    fun pull(out: ShortArray, count: Int, sampleRate: Int): Int {
+    /**
+     * Fills [out] with the next [count] samples at the read position and advances it. Positions that
+     * were never written, or that fell out of the window, read as silence. Returns the read position
+     * the frame started at, or -1 when the reference is off.
+     */
+    fun pull(out: ShortArray, count: Int, sampleRate: Int): Long {
         synchronized(lock) {
             if (!enabled || rate != sampleRate || buffer.isEmpty()) {
                 out.fill(0, 0, count)
-                return 0
+                return -1L
             }
-            val available = minOf(count, size)
-            val capacity = buffer.size
-            var read = (head - size + capacity) % capacity
-            for (i in 0 until available) {
-                out[i] = buffer[read]
-                read = (read + 1) % capacity
+            val start = readPos
+            for (i in 0 until count) {
+                val pos = readPos + i
+                out[i] = sampleAt(pos)
             }
-            size -= available
-            if (available < count) out.fill(0, available, count)
-            return available
+            readPos += count
+            return start
         }
     }
 
-    /** Samples currently queued ahead of capture, for diagnostics. */
-    fun queued(): Int = synchronized(lock) { size }
+    /** Samples between the read and write positions: positive means the reference trails what was written. */
+    fun lead(): Long = synchronized(lock) { writePos - readPos }
 
-    private fun write(sample: Short) {
-        val capacity = buffer.size
-        buffer[head] = sample
-        head = (head + 1) % capacity
-        if (size < capacity) size++ // full: the oldest sample is overwritten
+    /** Moves the read position so the reference trails the write position by [samples]. */
+    fun setLead(samples: Long) {
+        synchronized(lock) { readPos = writePos - samples.coerceIn(0L, buffer.size.toLong() / 2) }
+    }
+
+    /** Copies [count] samples ending just before [endPos] into [out]; unwritten positions are silence. */
+    fun copyBefore(endPos: Long, count: Int, out: ShortArray) {
+        synchronized(lock) {
+            for (i in 0 until count) out[i] = sampleAt(endPos - count + i)
+        }
+    }
+
+    private fun sampleAt(pos: Long): Short {
+        if (pos < 0L || pos >= writePos || writePos - pos > buffer.size) return 0
+        return buffer[(pos % buffer.size).toInt()]
     }
 }

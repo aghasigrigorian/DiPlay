@@ -5,8 +5,10 @@ import java.io.Closeable
 
 /**
  * The app's own acoustic echo canceller (speexdsp, BSD) for calls on head units whose firmware has
- * none. Works on one 16-bit mono frame at a time: the captured frame and the matching far-end frame
- * from [EchoReference] go in, the cleaned frame comes out in place.
+ * none that works. One 16-bit mono frame at a time: the captured frame and the matching far-end
+ * frame from [EchoReference] go in, the cleaned frame comes out in place. While the call runs,
+ * [EchoDelayEstimator] measures the real echo delay and the reference position is moved so the
+ * echo falls inside the filter's window.
  */
 internal class SpeexEchoCanceller private constructor(
     private var handle: Long,
@@ -16,8 +18,13 @@ internal class SpeexEchoCanceller private constructor(
     private val near = ShortArray(frameSamples)
     private val far = ShortArray(frameSamples)
     private val out = ShortArray(frameSamples)
-    private var framesWithoutReference = 0
+    private val estimator = EchoDelayEstimator(sampleRate)
     private var framesProcessed = 0
+    private var framesWithoutReference = 0
+    private var measuredDelayMs = -1
+    private var measuredConfidence = 0.0
+    private var realignments = 0
+    private var lastEstimateFrame = 0
 
     /** [frame] holds exactly one frame of 16-bit little-endian mono PCM and is rewritten in place. */
     fun process(frame: ByteArray) {
@@ -26,23 +33,42 @@ internal class SpeexEchoCanceller private constructor(
         for (i in 0 until frameSamples) {
             near[i] = ((frame[2 * i].toInt() and 0xff) or (frame[2 * i + 1].toInt() shl 8)).toShort()
         }
-        val real = EchoReference.pull(far, frameSamples, sampleRate)
-        if (real == 0) framesWithoutReference++
+        val refPos = EchoReference.pull(far, frameSamples, sampleRate)
+        if (refPos < 0L || far.all { it.toInt() == 0 }) framesWithoutReference++
+        estimator.feed(frame, frameSamples, refPos)
         nativeProcess(current, near, far, out)
         for (i in 0 until frameSamples) {
             val sample = out[i].toInt()
             frame[2 * i] = (sample and 0xff).toByte()
             frame[2 * i + 1] = ((sample shr 8) and 0xff).toByte()
         }
-        if (++framesProcessed % 500 == 0) {
-            Log.i(TAG, "app echo canceller frames=$framesProcessed withoutReference=$framesWithoutReference queued=${EchoReference.queued()}")
+        framesProcessed++
+        if (estimator.ready && framesProcessed - lastEstimateFrame >= ESTIMATE_EVERY_FRAMES) {
+            lastEstimateFrame = framesProcessed
+            estimator.estimate()?.let { apply(it) }
         }
     }
 
-    /** One line for the settings page: how many frames ran and how many had no reference to subtract. */
+    /** Places the reference [SETTLE_MILLIS] ahead of the measured echo so the filter's window covers it. */
+    private fun apply(estimate: EchoDelayEstimator.Estimate) {
+        if (estimate.confidence < MIN_CONFIDENCE) return
+        measuredConfidence = estimate.confidence
+        val extra = estimate.delaySamples - sampleRate * SETTLE_MILLIS / 1000
+        val currentLead = EchoReference.lead()
+        val totalDelayMs = ((currentLead + estimate.delaySamples) * 1000 / sampleRate).toInt()
+        measuredDelayMs = totalDelayMs
+        if (kotlin.math.abs(extra) > sampleRate * REALIGN_THRESHOLD_MILLIS / 1000) {
+            EchoReference.setLead(currentLead + extra)
+            realignments++
+            Log.i(TAG, "echo delay ${totalDelayMs} ms (confidence ${"%.2f".format(estimate.confidence)}), reference lead moved to ${EchoReference.lead() * 1000 / sampleRate} ms")
+        }
+    }
+
+    /** One line for the settings page. */
     fun stats(): String {
         val percent = if (framesProcessed == 0) 0 else framesWithoutReference * 100 / framesProcessed
-        return "frames $framesProcessed, $percent% without reference, queued ${EchoReference.queued()}"
+        val delay = if (measuredDelayMs < 0) "echo delay not measured" else "echo delay ≈ $measuredDelayMs ms (${"%.2f".format(measuredConfidence)})"
+        return "$delay · lead ${EchoReference.lead() * 1000 / sampleRate.coerceAtLeast(1)} ms · realigned $realignments× · frames $framesProcessed, $percent% silent reference"
     }
 
     override fun close() {
@@ -54,8 +80,14 @@ internal class SpeexEchoCanceller private constructor(
     companion object {
         private const val TAG = "xcertplay-aec"
 
-        /** Echo path the canceller can absorb: playback buffering, the car's amplifier and the cabin. */
-        const val TAIL_MILLIS = 600
+        /** Echo path the filter can absorb behind the reference position. */
+        const val TAIL_MILLIS = 1_000
+
+        /** How far ahead of the measured echo the reference is placed. */
+        private const val SETTLE_MILLIS = 40
+        private const val REALIGN_THRESHOLD_MILLIS = 30
+        private const val MIN_CONFIDENCE = 0.25
+        private const val ESTIMATE_EVERY_FRAMES = 100
 
         val available: Boolean by lazy {
             runCatching { System.loadLibrary("xcertplay_aec") }
