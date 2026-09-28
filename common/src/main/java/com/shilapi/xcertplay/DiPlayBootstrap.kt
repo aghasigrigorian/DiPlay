@@ -68,6 +68,10 @@ internal object DiPlayPreferences {
     fun saveCarBluetoothAddress(context: Context, value: String?) {
         prefs(context).edit().putString("car_bluetooth_address", value?.takeIf { it.isNotBlank() }).apply()
     }
+    fun echoCancellation(context: Context): String = prefs(context).getString("echo_cancellation", "auto") ?: "auto"
+    fun saveEchoCancellation(context: Context, value: String) {
+        prefs(context).edit().putString("echo_cancellation", value).apply()
+    }
     fun lastCallSummary(context: Context): String? = prefs(context).getString("last_call_summary", null)
     fun saveLastCallSummary(context: Context, value: String) {
         prefs(context).edit().putString("last_call_summary", value).apply()

@@ -41,6 +41,7 @@ class AndroidMediaSink(
     private val onAudioDiagnostic: (String) -> Unit = {},
     /** Lets the call microphone switch the head unit into in-communication mode; optional. */
     private val audioManager: android.media.AudioManager? = null,
+    private val echoCancellation: EchoCancellationMode = EchoCancellationMode.AUTO,
 ) : MediaSink {
     private val screenStateLock = Any()
     private val activeScreenTypes = mutableSetOf<Int>()
@@ -132,7 +133,7 @@ class AndroidMediaSink(
     }
 
     override fun onMicrophoneStarted(type: Int, config: MicrophoneConfig) {
-        val uplink = microphoneUplinks.computeIfAbsent(type) { MicrophoneUplink(config, audioManager) }
+        val uplink = microphoneUplinks.computeIfAbsent(type) { MicrophoneUplink(config, audioManager, echoCancellation) }
         if (!uplink.start()) microphoneUplinks.remove(type, uplink)
     }
 
@@ -879,6 +880,7 @@ private class AudioRenderer(
             val count = track.write(data, offset + written, writeLength, AudioTrack.WRITE_BLOCKING)
             maxWriteMs = maxOf(maxWriteMs, (System.nanoTime() - writeStarted) / 1_000_000L)
             if (count <= 0) break
+            if (format.audioType == "telephony") EchoReference.push(data, offset + written, count, format.channels, format.sampleRate)
             written += count
             bufferProgress.written(count)
             lastPcmWriteNs = System.nanoTime()

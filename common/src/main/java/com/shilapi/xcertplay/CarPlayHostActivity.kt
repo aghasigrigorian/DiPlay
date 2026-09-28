@@ -2787,6 +2787,7 @@ class CarPlayHostActivity : ComponentActivity() {
                 diagnosticLog?.append(formattedLogLine(message, System.currentTimeMillis()))
             },
             audioManager = getSystemService(android.media.AudioManager::class.java),
+            echoCancellation = com.shilapi.xcertplay.media.EchoCancellationMode.parse(DiPlayPreferences.echoCancellation(this)),
         )
     }
 

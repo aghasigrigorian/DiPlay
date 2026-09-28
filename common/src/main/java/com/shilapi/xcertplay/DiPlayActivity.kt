@@ -295,6 +295,10 @@ class DiPlayActivity : ComponentActivity() {
             else -> "Microphone permission is on: calls use the car’s microphone. No call in this session yet."
         }
         card.addView(label(micLine, 14, if (microphoneAllowed) MUTED else WARNING).apply { setPadding(0, dp(12), 0, 0) })
+        val modes = listOf("auto", "app", "off")
+        choice(card, "Echo cancellation", listOf("Automatic · head unit first, app if missing", "Always in the app", "Off"),
+            modes.indexOf(DiPlayPreferences.echoCancellation(this)).coerceAtLeast(0)) { DiPlayPreferences.saveEchoCancellation(this, modes[it]) }
+        card.addView(label("Stops the other party hearing themselves through the car speakers. Changes apply to the next connection.", 14, MUTED).apply { setPadding(0, dp(10), 0, 0) })
     }
 
     private fun editCarBluetoothAddress() {

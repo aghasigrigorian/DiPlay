@@ -35,7 +35,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal class MicrophoneUplink(
     private val config: MicrophoneConfig,
     private val audioManager: AudioManager? = null,
+    private val echoCancellation: EchoCancellationMode = EchoCancellationMode.AUTO,
 ) : Closeable {
+    @Volatile private var softwareCanceller: SpeexEchoCanceller? = null
     private val running = AtomicBoolean(false)
     private val firstPacketLogged = AtomicBoolean(false)
     @Volatile private var recorder: AudioRecord? = null
@@ -123,8 +125,28 @@ internal class MicrophoneUplink(
         socket = nextSocket
         opusEncoder = nextEncoder
         if (config.audioType == "telephony") {
-            effects = attachVoiceEffects(nextRecorder.audioSessionId)
-            enterCommunicationMode()
+            if (echoCancellation != EchoCancellationMode.OFF) {
+                effects = attachVoiceEffects(nextRecorder.audioSessionId)
+                enterCommunicationMode()
+            }
+            val platformOn = effects.any { it is AcousticEchoCanceler }
+            val wantSoftware = when (echoCancellation) {
+                EchoCancellationMode.APP -> true
+                EchoCancellationMode.AUTO -> !platformOn
+                EchoCancellationMode.OFF -> false
+            }
+            val canceller = if (wantSoftware && config.channels == 1) {
+                EchoReference.start(config.sampleRate)
+                SpeexEchoCanceller.create(config.sampleRate, config.frameBytes / 2)
+            } else {
+                null
+            }
+            softwareCanceller = canceller
+            val summary = "car microphone · head-unit echo canceller ${if (platformOn) "on" else "unavailable"}" +
+                " · app echo canceller ${if (canceller != null) "on" else if (wantSoftware) "unavailable" else "off"}" +
+                " · noise suppressor ${if (effects.any { it is NoiseSuppressor }) "on" else "unavailable"}"
+            CallMicrophoneStatus.lastCallSummary = summary
+            Log.i(TAG, "microphone voice processing: $summary")
         }
         return try {
             nextRecorder.startRecording()
@@ -155,9 +177,7 @@ internal class MicrophoneUplink(
             val status = runCatching { effect.setEnabled(true) }.getOrDefault(AudioEffect.ERROR)
             if (status == AudioEffect.SUCCESS) attached += effect else runCatching { effect.release() }
         }
-        val summary = "car microphone · echo canceller ${describe(aec, attached)} · noise suppressor ${describe(ns, attached)}"
-        CallMicrophoneStatus.lastCallSummary = summary
-        Log.i(TAG, "microphone voice effects: $summary")
+        Log.i(TAG, "microphone voice effects echoCanceller=${describe(aec, attached)} noiseSuppressor=${describe(ns, attached)}")
         return attached
     }
 
@@ -224,6 +244,7 @@ internal class MicrophoneUplink(
     }
 
     private fun sendFrame(socket: DatagramSocket, counters: MicrophoneCounters, frame: ByteArray) {
+        softwareCanceller?.process(frame)
         val bodies = if (config.codec == AudioCodecKind.OPUS) {
             opusEncoder?.encode(frame).orEmpty()
         } else {
@@ -299,6 +320,10 @@ internal class MicrophoneUplink(
         val currentEffects = effects
         effects = emptyList()
         currentEffects.forEach { runCatching { it.release() } }
+        val currentCanceller = softwareCanceller
+        softwareCanceller = null
+        currentCanceller?.close()
+        EchoReference.stop()
         leaveCommunicationMode()
         val currentRecorder = recorder
         recorder = null
