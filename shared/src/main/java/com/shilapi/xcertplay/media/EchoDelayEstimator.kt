@@ -15,6 +15,7 @@ internal class EchoDelayEstimator(
     private val windowMillis: Int = 1_000,
     private val maxDelayMillis: Int = 1_500,
     private val stepMillis: Int = 5,
+    private val maxEarlyMillis: Int = 300,
 ) {
     /** A measurement: [delaySamples] is the echo delay relative to the reference position of the frame, at full rate. */
     data class Estimate(val delaySamples: Int, val confidence: Double)
@@ -49,17 +50,19 @@ internal class EchoDelayEstimator(
         carry = 0
         if (micEnergy < MIN_ENERGY * windowSamples) return null
         val maxLag = decimatedRate * maxDelayMillis / 1000
+        val maxEarly = decimatedRate * maxEarlyMillis / 1000
         val step = maxOf(1, decimatedRate * stepMillis / 1000)
-        // Reference around the window: from maxLag before it to a little after, decimated the same way.
-        val refSpan = windowSamples + maxLag
+        // Reference around the window: from maxLag before it to maxEarly after, decimated the same way.
+        val refSpan = windowSamples + maxLag + maxEarly
         val ref = ShortArray(refSpan)
         val full = ShortArray(refSpan * decimation)
-        EchoReference.copyBefore(startRef + windowSamples.toLong() * decimation, full.size, full)
+        EchoReference.copyBefore(startRef + (windowSamples + maxEarly).toLong() * decimation, full.size, full)
         for (i in 0 until refSpan) ref[i] = full[i * decimation]
-        // ref[maxLag + t] lines up with mic[t] at lag 0; lag k means the echo arrived k samples later.
+        // ref[maxLag + t] lines up with mic[t] at lag 0; lag k means the echo arrived k samples later,
+        // a negative lag means the reference is already behind the echo.
         var bestLag = 0
         var best = 0.0
-        var lag = 0
+        var lag = -maxEarly
         while (lag <= maxLag) {
             var dot = 0.0
             var refEnergy = 0.0

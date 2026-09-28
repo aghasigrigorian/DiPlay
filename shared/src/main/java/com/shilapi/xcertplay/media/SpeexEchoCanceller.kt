@@ -25,6 +25,10 @@ internal class SpeexEchoCanceller private constructor(
     private var measuredConfidence = 0.0
     private var realignments = 0
     private var lastEstimateFrame = 0
+    private val history = ArrayDeque<String>()
+    private var nearEnergy = 0.0
+    private var outEnergy = 0.0
+    private var activeFrames = 0
 
     /** [frame] holds exactly one frame of 16-bit little-endian mono PCM and is rewritten in place. */
     fun process(frame: ByteArray) {
@@ -34,9 +38,15 @@ internal class SpeexEchoCanceller private constructor(
             near[i] = ((frame[2 * i].toInt() and 0xff) or (frame[2 * i + 1].toInt() shl 8)).toShort()
         }
         val refPos = EchoReference.pull(far, frameSamples, sampleRate)
-        if (refPos < 0L || far.all { it.toInt() == 0 }) framesWithoutReference++
+        val farActive = refPos >= 0L && energy(far) > ACTIVE_ENERGY * frameSamples
+        if (!farActive) framesWithoutReference++
         estimator.feed(frame, frameSamples, refPos)
         nativeProcess(current, near, far, out)
+        if (farActive) {
+            nearEnergy += energy(near)
+            outEnergy += energy(out)
+            activeFrames++
+        }
         for (i in 0 until frameSamples) {
             val sample = out[i].toInt()
             frame[2 * i] = (sample and 0xff).toByte()
@@ -51,12 +61,15 @@ internal class SpeexEchoCanceller private constructor(
 
     /** Places the reference [SETTLE_MILLIS] ahead of the measured echo so the filter's window covers it. */
     private fun apply(estimate: EchoDelayEstimator.Estimate) {
+        val currentLead = EchoReference.lead()
+        // Delay from writing the far end into the player to hearing it in the microphone.
+        val totalDelayMs = ((currentLead + estimate.delaySamples) * 1000 / sampleRate).toInt()
+        if (history.size >= 6) history.removeFirst()
+        history.addLast("${totalDelayMs}ms/${"%.2f".format(estimate.confidence)}")
         if (estimate.confidence < MIN_CONFIDENCE) return
         measuredConfidence = estimate.confidence
-        val extra = estimate.delaySamples - sampleRate * SETTLE_MILLIS / 1000
-        val currentLead = EchoReference.lead()
-        val totalDelayMs = ((currentLead + estimate.delaySamples) * 1000 / sampleRate).toInt()
         measuredDelayMs = totalDelayMs
+        val extra = estimate.delaySamples - sampleRate * SETTLE_MILLIS / 1000
         if (kotlin.math.abs(extra) > sampleRate * REALIGN_THRESHOLD_MILLIS / 1000) {
             EchoReference.setLead(currentLead + extra)
             realignments++
@@ -64,11 +77,19 @@ internal class SpeexEchoCanceller private constructor(
         }
     }
 
+    private fun energy(samples: ShortArray): Double {
+        var sum = 0.0
+        for (s in samples) { val v = s.toDouble(); sum += v * v }
+        return sum
+    }
+
     /** One line for the settings page. */
     fun stats(): String {
         val percent = if (framesProcessed == 0) 0 else framesWithoutReference * 100 / framesProcessed
-        val delay = if (measuredDelayMs < 0) "echo delay not measured" else "echo delay ≈ $measuredDelayMs ms (${"%.2f".format(measuredConfidence)})"
-        return "$delay · lead ${EchoReference.lead() * 1000 / sampleRate.coerceAtLeast(1)} ms · realigned $realignments× · frames $framesProcessed, $percent% silent reference · mic $sampleRate Hz · reference from ${EchoReference.describeSources()}"
+        val delay = if (measuredConfidence < MIN_CONFIDENCE) "echo delay not confirmed" else "echo delay ≈ $measuredDelayMs ms (${"%.2f".format(measuredConfidence)})"
+        val removed = if (activeFrames == 0 || outEnergy <= 0.0) "nothing to cancel" else
+            "removes ${"%.1f".format(10 * kotlin.math.log10(nearEnergy / outEnergy))} dB while the far end talks ($activeFrames frames)"
+        return "$delay · estimates [${history.joinToString(" ")}] · lead ${EchoReference.lead() * 1000 / sampleRate.coerceAtLeast(1)} ms · realigned $realignments× · $removed · frames $framesProcessed, $percent% silent reference · mic $sampleRate Hz · reference from ${EchoReference.describeSources()}"
     }
 
     override fun close() {
@@ -88,6 +109,9 @@ internal class SpeexEchoCanceller private constructor(
         private const val REALIGN_THRESHOLD_MILLIS = 30
         private const val MIN_CONFIDENCE = 0.25
         private const val ESTIMATE_EVERY_FRAMES = 100
+
+        /** Mean square above which a reference frame counts as the far end talking (about -50 dBFS). */
+        private const val ACTIVE_ENERGY = 1_000.0
 
         val available: Boolean by lazy {
             runCatching { System.loadLibrary("xcertplay_aec") }
