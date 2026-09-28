@@ -155,11 +155,9 @@ internal class MicrophoneUplink(
             val status = runCatching { effect.setEnabled(true) }.getOrDefault(AudioEffect.ERROR)
             if (status == AudioEffect.SUCCESS) attached += effect else runCatching { effect.release() }
         }
-        Log.i(
-            TAG,
-            "microphone voice effects echoCanceller=${describe(aec, attached)} " +
-                "noiseSuppressor=${describe(ns, attached)}",
-        )
+        val summary = "car microphone · echo canceller ${describe(aec, attached)} · noise suppressor ${describe(ns, attached)}"
+        CallMicrophoneStatus.lastCallSummary = summary
+        Log.i(TAG, "microphone voice effects: $summary")
         return attached
     }
 

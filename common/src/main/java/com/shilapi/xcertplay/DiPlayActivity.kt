@@ -287,6 +287,14 @@ class DiPlayActivity : ComponentActivity() {
         card.addView(label(detected, 14, if (resolved == null) WARNING else MUTED).apply { setPadding(0, dp(10), 0, 0) })
         card.addView(button("Car Bluetooth address · ${manual ?: "Auto"}", false) { editCarBluetoothAddress() }, matchButton(12, 60))
         card.addView(label("Applies to the next connection.", 14, MUTED).apply { setPadding(0, dp(10), 0, 0) })
+        val lastCall = com.shilapi.xcertplay.media.CallMicrophoneStatus.lastCallSummary ?: DiPlayPreferences.lastCallSummary(this)
+        val microphoneAllowed = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        val micLine = when {
+            !microphoneAllowed -> "Microphone permission is off, so the iPhone uses its own microphone for calls. Allow it under App permissions to use the car’s microphone."
+            lastCall != null -> "Last call: $lastCall."
+            else -> "Microphone permission is on: calls use the car’s microphone. No call in this session yet."
+        }
+        card.addView(label(micLine, 14, if (microphoneAllowed) MUTED else WARNING).apply { setPadding(0, dp(12), 0, 0) })
     }
 
     private fun editCarBluetoothAddress() {
@@ -575,6 +583,7 @@ class DiPlayActivity : ComponentActivity() {
         }
         connectButton?.isEnabled = setupError == null
         callHint?.visibility = if (CarPlayBackgroundSession.active && DiPlayBluetooth.handsFreeLinkConnected(this) == true) View.VISIBLE else View.GONE
+        com.shilapi.xcertplay.media.CallMicrophoneStatus.lastCallSummary?.let { if (it != DiPlayPreferences.lastCallSummary(this)) DiPlayPreferences.saveLastCallSummary(this, it) }
     }
     private fun reportFileName() = "DiPlay-${SimpleDateFormat("yyyyMMdd-HHmmss-SSS", Locale.US).format(Date())}.txt"
 
