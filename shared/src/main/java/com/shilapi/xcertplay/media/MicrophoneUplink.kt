@@ -37,6 +37,8 @@ internal class MicrophoneUplink(
     private val audioManager: AudioManager? = null,
     private val echoCancellation: EchoCancellationMode = EchoCancellationMode.AUTO,
     private val callVolumeMemory: CallVolumeMemory? = null,
+    /** Echo delay measured by the echo test, in ms; null when never calibrated. */
+    private val calibratedEchoDelayMillis: Int? = null,
 ) : Closeable {
     @Volatile private var softwareCanceller: SpeexEchoCanceller? = null
     private val running = AtomicBoolean(false)
@@ -144,8 +146,13 @@ internal class MicrophoneUplink(
                 EchoCancellationMode.OFF -> false
             }
             val canceller = if (wantSoftware && config.channels == 1) {
-                EchoReference.start(config.sampleRate)
-                SpeexEchoCanceller.create(config.sampleRate, config.frameBytes / 2)
+                val calibrated = calibratedEchoDelayMillis?.takeIf { it > 0 }
+                val lead = calibrated?.let { ((it - CALIBRATED_SETTLE_MILLIS).coerceAtLeast(0)) * config.sampleRate / 1000 }
+                EchoReference.start(config.sampleRate, lead)
+                SpeexEchoCanceller.create(
+                    config.sampleRate, config.frameBytes / 2,
+                    if (calibrated != null) SpeexEchoCanceller.CALIBRATED_TAIL_MILLIS else SpeexEchoCanceller.TAIL_MILLIS,
+                )
             } else {
                 null
             }
@@ -153,7 +160,8 @@ internal class MicrophoneUplink(
             val summary = "car microphone (${if (source == MediaRecorder.AudioSource.VOICE_RECOGNITION) "raw" else "voice-processed"})" +
                 " · head-unit echo canceller ${if (platformOn) "on" else if (echoCancellation == EchoCancellationMode.AUTO) "unavailable" else "off"}" +
                 " · app echo canceller ${if (canceller != null) "on" else if (wantSoftware) "unavailable" else "off"}" +
-                " · noise suppressor ${if (effects.any { it is NoiseSuppressor }) "head unit" else if (canceller != null) "app" else "off"}"
+                " · noise suppressor ${if (effects.any { it is NoiseSuppressor }) "head unit" else if (canceller != null) "app" else "off"}" +
+                (calibratedEchoDelayMillis?.let { " · calibrated echo delay $it ms" } ?: " · not calibrated")
             CallMicrophoneStatus.lastCallSummary = summary
             Log.i(TAG, "microphone voice processing: $summary")
         }
@@ -388,5 +396,8 @@ internal class MicrophoneUplink(
         const val MIN_READ_BYTES = 2_048
         const val CLOSE_JOIN_MILLIS = 500L
         const val VOLUME_POLL_EVERY_READS = 8
+
+        /** The reference is placed this much ahead of the calibrated echo. */
+        const val CALIBRATED_SETTLE_MILLIS = 40
     }
 }

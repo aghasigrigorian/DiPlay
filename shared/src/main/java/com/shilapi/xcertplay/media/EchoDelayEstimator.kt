@@ -26,11 +26,13 @@ internal class EchoDelayEstimator(
     private var filled = 0
     private var micStartRefPos = -1L
     private var carry = 0
+    private var activeSamples = 0
 
     /** Feeds one captured frame; [refPos] is the reference position the frame was aligned with. */
-    fun feed(frame: ByteArray, frameSamples: Int, refPos: Long) {
+    fun feed(frame: ByteArray, frameSamples: Int, refPos: Long, farActive: Boolean = true) {
         if (refPos < 0L) return
-        if (filled == 0) micStartRefPos = refPos
+        if (filled == 0) { micStartRefPos = refPos; activeSamples = 0 }
+        if (farActive) activeSamples += frameSamples / decimation
         var i = carry
         while (i < frameSamples && filled < windowSamples) {
             mic[filled++] = ((frame[2 * i].toInt() and 0xff) or (frame[2 * i + 1].toInt() shl 8)).toShort()
@@ -46,8 +48,12 @@ internal class EchoDelayEstimator(
         if (!ready) return null
         val micEnergy = energy(mic, 0, windowSamples)
         val startRef = micStartRefPos
+        val active = activeSamples
         filled = 0
         carry = 0
+        activeSamples = 0
+        // Only windows where the far end actually talked for most of the time say anything about the echo.
+        if (active < windowSamples / 2) return null
         if (micEnergy < MIN_ENERGY * windowSamples) return null
         val maxLag = decimatedRate * maxDelayMillis / 1000
         val maxEarly = decimatedRate * maxEarlyMillis / 1000
@@ -87,8 +93,54 @@ internal class EchoDelayEstimator(
         return sum
     }
 
-    private companion object {
+    companion object {
         /** Mean square below this is treated as silence (about -50 dBFS). */
-        const val MIN_ENERGY = 1_000.0
+        private const val MIN_ENERGY = 1_000.0
+
+        /**
+         * Offline: how much later than [aligned] the echo appears in [mic]. Both are 16-bit mono at
+         * [sampleRate] and describe the same stretch of time; [aligned] is the far end as it was
+         * handed to the player at each moment. Coarse search in 5 ms steps, then refined sample by
+         * sample around the peak. Returns the delay in samples at [sampleRate] and a 0..1 confidence.
+         */
+        fun correlate(mic: ShortArray, aligned: ShortArray, sampleRate: Int, minLagMillis: Int, maxLagMillis: Int): Estimate {
+            val decimation = maxOf(1, sampleRate / 8_000)
+            val rate = sampleRate / decimation
+            val n = minOf(mic.size, aligned.size) / decimation
+            val m = ShortArray(n) { mic[it * decimation] }
+            val r = ShortArray(n) { aligned[it * decimation] }
+            val micEnergy = m.sumOf { it.toDouble() * it }
+            if (n < rate || micEnergy <= 0.0) return Estimate(0, 0.0)
+            fun score(lag: Int): Double {
+                var dot = 0.0
+                var refEnergy = 0.0
+                val from = maxOf(0, lag)
+                val to = minOf(n, n + lag)
+                if (to - from < rate / 2) return 0.0
+                for (t in from until to) {
+                    val v = r[t - lag].toDouble()
+                    dot += m[t] * v
+                    refEnergy += v * v
+                }
+                return if (refEnergy <= 0.0) 0.0 else dot / sqrt(micEnergy * refEnergy)
+            }
+            val minLag = rate * minLagMillis / 1000
+            val maxLag = rate * maxLagMillis / 1000
+            val step = maxOf(1, rate * 5 / 1000)
+            var bestLag = 0
+            var best = 0.0
+            var lag = minLag
+            while (lag <= maxLag) {
+                val s = score(lag)
+                if (s > best) { best = s; bestLag = lag }
+                lag += step
+            }
+            for (fine in (bestLag - step + 1) until (bestLag + step)) {
+                if (fine < minLag || fine > maxLag) continue
+                val s = score(fine)
+                if (s > best) { best = s; bestLag = fine }
+            }
+            return Estimate(bestLag * decimation, best)
+        }
     }
 }

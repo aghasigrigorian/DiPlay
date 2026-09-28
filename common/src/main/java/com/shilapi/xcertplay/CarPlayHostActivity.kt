@@ -2793,6 +2793,7 @@ class CarPlayHostActivity : ComponentActivity() {
                 getSharedPreferences("diplay", MODE_PRIVATE),
                 DiPlayPreferences.rememberCallVolume(this),
             ),
+            calibratedEchoDelayMillis = DiPlayPreferences.echoDelayMillis(this),
         )
     }
 

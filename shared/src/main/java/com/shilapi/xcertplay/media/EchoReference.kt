@@ -22,6 +22,7 @@ internal object EchoReference {
     private var writePos = 0L
     private var readPos = 0L
     private var pendingPrefill = false
+    private var fixedLead: Int? = null
     private var targetLead = 0L
     private var resamplePhase = 0.0
     private var resampleLast = 0
@@ -34,8 +35,10 @@ internal object EchoReference {
     @Volatile var initialLeadSamples = 0
         private set
 
-    fun start(sampleRate: Int) {
+    /** [fixedLeadSamples] overrides the buffer-based guess with a calibrated echo delay. */
+    fun start(sampleRate: Int, fixedLeadSamples: Int? = null) {
         synchronized(lock) {
+            fixedLead = fixedLeadSamples
             rate = sampleRate
             buffer = ShortArray(sampleRate * CAPACITY_MILLIS / 1000)
             writePos = 0L
@@ -72,7 +75,8 @@ internal object EchoReference {
             if (buffer.isEmpty()) return
             if (pendingPrefill) {
                 pendingPrefill = false
-                val lead = (queuedFrames.coerceAtLeast(0) * rate / sampleRate + rate * MARGIN_MILLIS / 1000).coerceAtMost(buffer.size / 2)
+                val lead = (fixedLead ?: (queuedFrames.coerceAtLeast(0) * rate / sampleRate + rate * MARGIN_MILLIS / 1000))
+                    .coerceIn(0, buffer.size / 2)
                 initialLeadSamples = lead
                 targetLead = lead.toLong()
                 readPos = writePos - lead
@@ -144,6 +148,9 @@ internal object EchoReference {
             return start
         }
     }
+
+    /** Samples written since [start]; also the index of the next sample in the timeline. */
+    fun writePosition(): Long = synchronized(lock) { writePos }
 
     /** Samples between the read and write positions: positive means the reference trails what was written. */
     fun lead(): Long = synchronized(lock) { writePos - readPos }

@@ -17,9 +17,17 @@ import java.util.concurrent.atomic.AtomicBoolean
  * listen to what the other party would have heard.
  */
 class EchoSelfTest(private val audioManager: AudioManager?) {
-    class Result(val summary: String, val raw: ByteArray, val cleaned: ByteArray, val sampleRate: Int)
+    class Result(
+        val summary: String,
+        val raw: ByteArray,
+        val cleaned: ByteArray,
+        val sampleRate: Int,
+        val delayMillis: Int,
+        val confidence: Double,
+        val removalDb: Double?,
+    )
 
-    /** [clip] is 16-bit little-endian mono PCM at [SAMPLE_RATE]. Blocks for about 25 s; call off the main thread. */
+    /** [clip] is 16-bit little-endian mono PCM at [SAMPLE_RATE]. Blocks for about 30 s; call off the main thread. */
     fun run(clip: ByteArray, onStatus: (String) -> Unit): Result {
         check(running.compareAndSet(false, true)) { "Echo test already running" }
         var previousMode: Int? = null
@@ -38,11 +46,16 @@ class EchoSelfTest(private val audioManager: AudioManager?) {
             .setBufferSizeInBytes(trackBuffer)
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
-        EchoReference.start(SAMPLE_RATE)
-        val canceller = SpeexEchoCanceller.create(SAMPLE_RATE, FRAME_SAMPLES)
+        // The full far-end sequence in the order it is handed to the player: the timeline index of a
+        // pushed sample is its index in this array.
+        val silence = ByteArray(FRAME_BYTES)
+        val sequence = ByteArrayOutputStream()
+        repeat(PASSES) { sequence.write(clip); repeat(PAUSE_FRAMES) { sequence.write(silence) } }
+        val farEnd = toShorts(sequence.toByteArray())
+        EchoReference.start(SAMPLE_RATE, 0)
         try {
             check(record.state == AudioRecord.STATE_INITIALIZED) { "The microphone could not be opened" }
-            checkNotNull(canceller) { "The app echo canceller is unavailable on this head unit" }
+            check(SpeexEchoCanceller.available) { "The app echo canceller is unavailable on this head unit" }
             audioManager?.let { manager ->
                 runCatching {
                     previousMode = manager.mode
@@ -55,31 +68,20 @@ class EchoSelfTest(private val audioManager: AudioManager?) {
             record.startRecording()
             track.play()
             val raw = ByteArrayOutputStream()
-            val cleaned = ByteArrayOutputStream()
+            val writePositions = ArrayList<Long>()
             val playing = AtomicBoolean(true)
             val player = Thread({
                 try {
                     var framesWritten = 0L
-                    fun feed(data: ByteArray, offset: Int, length: Int) {
-                        var done = 0
-                        while (done < length && running.get()) {
-                            val n = track.write(data, offset + done, length - done, AudioTrack.WRITE_BLOCKING)
-                            if (n <= 0) break
-                            framesWritten += n / 2
-                            val queued = (framesWritten - runCatching { track.playbackHeadPosition.toLong() }.getOrDefault(0L)).coerceAtLeast(0L)
-                            EchoReference.push(data, offset + done, n, 1, SAMPLE_RATE, queued.toInt(), "echo test")
-                            done += n
-                        }
-                    }
-                    val silence = ByteArray(FRAME_BYTES)
-                    repeat(PASSES) {
-                        var offset = 0
-                        while (offset < clip.size && running.get()) {
-                            val n = minOf(FRAME_BYTES, clip.size - offset)
-                            feed(clip, offset, n)
-                            offset += n
-                        }
-                        repeat(PAUSE_FRAMES) { if (running.get()) feed(silence, 0, FRAME_BYTES) }
+                    val data = sequence.toByteArray()
+                    var offset = 0
+                    while (offset < data.size && running.get()) {
+                        val n = track.write(data, offset, minOf(FRAME_BYTES, data.size - offset), AudioTrack.WRITE_BLOCKING)
+                        if (n <= 0) break
+                        framesWritten += n / 2
+                        val queued = (framesWritten - runCatching { track.playbackHeadPosition.toLong() }.getOrDefault(0L)).coerceAtLeast(0L)
+                        EchoReference.push(data, offset, n, 1, SAMPLE_RATE, queued.toInt(), "echo test")
+                        offset += n
                     }
                 } finally {
                     playing.set(false)
@@ -88,6 +90,7 @@ class EchoSelfTest(private val audioManager: AudioManager?) {
 
             val frame = ByteArray(FRAME_BYTES)
             val started = System.currentTimeMillis()
+            val expectedSeconds = farEnd.size / SAMPLE_RATE + 1
             var tailDeadline = -1L
             while (running.get()) {
                 val now = System.currentTimeMillis()
@@ -103,23 +106,19 @@ class EchoSelfTest(private val audioManager: AudioManager?) {
                 }
                 if (filled < frame.size) break
                 raw.write(frame, 0, frame.size)
-                canceller.process(frame)
-                cleaned.write(frame, 0, frame.size)
-                if (((now - started) / 1000) % 2 == 0L) onStatus("Echo test running… ${(now - started) / 1000} s of about ${(clip.size / FRAME_BYTES + PAUSE_FRAMES) * PASSES / 50}")
+                writePositions.add(EchoReference.writePosition())
+                onStatus("Echo test: listening… ${(now - started) / 1000} s of about $expectedSeconds")
             }
             running.set(false)
             player.join(3000)
-            val result = Result(canceller.stats(), raw.toByteArray(), cleaned.toByteArray(), SAMPLE_RATE)
-            lastResult = result
-            Log.i(TAG, "echo test: ${result.summary}")
-            return result
+            runCatching { record.stop() }
+            runCatching { track.stop() }
+            onStatus("Echo test: measuring the echo delay…")
+            return analyse(raw.toByteArray(), writePositions, farEnd, onStatus).also { lastResult = it }
         } finally {
             running.set(false)
-            runCatching { record.stop() }
             record.release()
-            runCatching { track.stop() }
             track.release()
-            canceller?.close()
             EchoReference.stop()
             audioManager?.let { manager ->
                 previousCallVolume?.let { runCatching { manager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, it, 0) } }
@@ -127,6 +126,64 @@ class EchoSelfTest(private val audioManager: AudioManager?) {
             }
         }
     }
+
+    /**
+     * Offline: lines the far end up with the recording (what was handed to the player during each
+     * captured frame), measures how much later it came back through the microphone, then runs the
+     * canceller over the recording with the reference placed just ahead of that echo — one warm-up
+     * pass so the filter has settled, one measured pass that produces the cleaned recording.
+     */
+    private fun analyse(raw: ByteArray, writePositions: List<Long>, farEnd: ShortArray, onStatus: (String) -> Unit): Result {
+        val mic = toShorts(raw)
+        val aligned = ShortArray(mic.size)
+        for ((f, writePos) in writePositions.withIndex()) {
+            val base = f * FRAME_SAMPLES
+            for (i in 0 until FRAME_SAMPLES) {
+                val index = writePos - FRAME_SAMPLES + i
+                aligned[base + i] = if (index in 0 until farEnd.size) farEnd[index.toInt()] else 0
+            }
+        }
+        val estimate = EchoDelayEstimator.correlate(mic, aligned, SAMPLE_RATE, MIN_DELAY_MILLIS, MAX_DELAY_MILLIS)
+        val delayMillis = estimate.delaySamples * 1000 / SAMPLE_RATE
+        val confident = estimate.confidence >= CONFIDENT
+        onStatus("Echo test: cancelling with a ${delayMillis} ms delay…")
+        val leadSamples = if (confident) (estimate.delaySamples - SAMPLE_RATE * SETTLE_MILLIS / 1000).coerceAtLeast(0) else 0
+        val tail = if (confident) SpeexEchoCanceller.CALIBRATED_TAIL_MILLIS else SpeexEchoCanceller.TAIL_MILLIS
+        val canceller = SpeexEchoCanceller.create(SAMPLE_RATE, FRAME_SAMPLES, tail) ?: throw IllegalStateException("The app echo canceller is unavailable")
+        val cleaned = ByteArray(raw.size)
+        try {
+            val frames = mic.size / FRAME_SAMPLES
+            val farFrame = ShortArray(FRAME_SAMPLES)
+            val work = ByteArray(FRAME_BYTES)
+            repeat(2) { pass ->
+                if (pass == 1) canceller.resetStats()
+                for (f in 0 until frames) {
+                    val base = f * FRAME_SAMPLES
+                    System.arraycopy(raw, base * 2, work, 0, FRAME_BYTES)
+                    for (i in 0 until FRAME_SAMPLES) {
+                        val index = base + i - leadSamples
+                        farFrame[i] = if (index >= 0 && index < aligned.size) aligned[index] else 0
+                    }
+                    canceller.processWithReference(work, farFrame)
+                    if (pass == 1) System.arraycopy(work, 0, cleaned, base * 2, FRAME_BYTES)
+                }
+            }
+            val removal = canceller.removalDb()
+            val summary = buildString {
+                append(if (confident) "echo delay ≈ $delayMillis ms (confidence ${"%.2f".format(estimate.confidence)}, calibrated)" else "no clear echo path found (best guess $delayMillis ms, confidence ${"%.2f".format(estimate.confidence)})")
+                append(" · canceller removes ")
+                append(removal?.let { "${"%.1f".format(it)} dB" } ?: "nothing (no far-end activity)")
+                append(" · tail $tail ms · ${mic.size / SAMPLE_RATE} s recorded")
+            }
+            Log.i(TAG, "echo test: $summary")
+            return Result(summary, raw, cleaned, SAMPLE_RATE, delayMillis, estimate.confidence, removal)
+        } finally {
+            canceller.close()
+        }
+    }
+
+    private fun toShorts(pcm: ByteArray): ShortArray =
+        ShortArray(pcm.size / 2) { i -> ((pcm[2 * i].toInt() and 0xff) or (pcm[2 * i + 1].toInt() shl 8)).toShort() }
 
     companion object {
         private const val TAG = "xcertplay-echo-test"
@@ -136,6 +193,12 @@ class EchoSelfTest(private val audioManager: AudioManager?) {
         private const val PASSES = 2
         private const val PAUSE_FRAMES = 50
         private const val TAIL_MILLIS = 1_000L
+        private const val MIN_DELAY_MILLIS = -300
+        private const val MAX_DELAY_MILLIS = 2_000
+        private const val SETTLE_MILLIS = 40
+
+        /** Correlation at or above this counts as a found echo path. */
+        const val CONFIDENT = 0.5
 
         private val running = AtomicBoolean(false)
         val isRunning: Boolean get() = running.get()

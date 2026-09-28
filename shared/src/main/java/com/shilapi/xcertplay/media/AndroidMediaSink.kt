@@ -43,6 +43,7 @@ class AndroidMediaSink(
     private val audioManager: android.media.AudioManager? = null,
     private val echoCancellation: EchoCancellationMode = EchoCancellationMode.AUTO,
     private val callVolumeMemory: CallVolumeMemory? = null,
+    private val calibratedEchoDelayMillis: Int? = null,
 ) : MediaSink {
     private val screenStateLock = Any()
     private val activeScreenTypes = mutableSetOf<Int>()
@@ -134,7 +135,7 @@ class AndroidMediaSink(
     }
 
     override fun onMicrophoneStarted(type: Int, config: MicrophoneConfig) {
-        val uplink = microphoneUplinks.computeIfAbsent(type) { MicrophoneUplink(config, audioManager, echoCancellation, callVolumeMemory) }
+        val uplink = microphoneUplinks.computeIfAbsent(type) { MicrophoneUplink(config, audioManager, echoCancellation, callVolumeMemory, calibratedEchoDelayMillis) }
         if (!uplink.start()) microphoneUplinks.remove(type, uplink)
     }
 

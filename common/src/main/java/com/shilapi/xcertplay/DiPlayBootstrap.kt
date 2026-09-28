@@ -72,6 +72,10 @@ internal object DiPlayPreferences {
     fun saveEchoCancellation(context: Context, value: String) {
         prefs(context).edit().putString("echo_cancellation", value).apply()
     }
+    fun echoDelayMillis(context: Context): Int? = prefs(context).getInt("echo_delay_ms", -1).takeIf { it > 0 }
+    fun saveEchoDelayMillis(context: Context, value: Int?) {
+        prefs(context).edit().putInt("echo_delay_ms", value ?: -1).apply()
+    }
     fun rememberCallVolume(context: Context) = prefs(context).getBoolean("remember_call_volume", true)
     fun saveRememberCallVolume(context: Context, value: Boolean) {
         prefs(context).edit().putBoolean("remember_call_volume", value).apply()

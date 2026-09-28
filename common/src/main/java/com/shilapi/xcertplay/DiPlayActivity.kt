@@ -306,7 +306,9 @@ class DiPlayActivity : ComponentActivity() {
         toggle(card, "Remember call volume separately", "Like the car's own phone: the knob sets a call level that is kept for the next call, and the music comes back at its old level when the call ends. The car's call stream runs at its maximum during a call.", DiPlayPreferences.rememberCallVolume(this)) { DiPlayPreferences.saveRememberCallVolume(this, it) }
         card.addView(label("Echo test without a call: plays a recorded voice through the car speakers on the call route for about 25 seconds while the microphone listens, runs the app’s echo canceller exactly as during a call, and reports how much of the voice it removed. Park, disconnect CarPlay, keep quiet.", 15, TEXT).apply { setPadding(0, dp(20), 0, 0) })
         val last = com.shilapi.xcertplay.media.EchoSelfTest.lastResult
-        echoTestStatus = label(last?.let { "Last test: ${it.summary}" } ?: "No test yet.", 14, MUTED).apply { setPadding(0, dp(10), 0, 0) }
+        val calibrated = DiPlayPreferences.echoDelayMillis(this)
+        card.addView(label(calibrated?.let { "Calls use the calibrated echo delay of $it ms from the echo test." } ?: "Not calibrated yet: run the echo test once, parked, so calls know how far behind the echo comes back.", 14, if (calibrated == null) WARNING else MUTED).apply { setPadding(0, dp(10), 0, 0) })
+        echoTestStatus = label(last?.let { "Last test: ${it.summary}" } ?: "No test in this session.", 14, MUTED).apply { setPadding(0, dp(10), 0, 0) }
         card.addView(echoTestStatus)
         card.addView(button(if (com.shilapi.xcertplay.media.EchoSelfTest.isRunning) "Echo test running…" else "Run echo test", true) { runEchoTest() }, matchButton(12, 60))
         if (last != null) {
@@ -325,8 +327,9 @@ class DiPlayActivity : ComponentActivity() {
                 val wav = assets.open("echo-test/voice-48k.wav").use { it.readBytes() }
                 val clip = com.shilapi.xcertplay.media.EchoSelfTest.pcmFromWav(wav, com.shilapi.xcertplay.media.EchoSelfTest.SAMPLE_RATE)
                 val manager = getSystemService(android.media.AudioManager::class.java)
-                com.shilapi.xcertplay.media.EchoSelfTest(manager).run(clip) { status -> runOnUiThread { echoTestStatus?.text = status } }
-                runOnUiThread { toast("Echo test done."); if (page == "settings") render() }
+                val result = com.shilapi.xcertplay.media.EchoSelfTest(manager).run(clip) { status -> runOnUiThread { echoTestStatus?.text = status } }
+                if (result.confidence >= com.shilapi.xcertplay.media.EchoSelfTest.CONFIDENT) DiPlayPreferences.saveEchoDelayMillis(this, result.delayMillis)
+                runOnUiThread { toast(if (result.confidence >= com.shilapi.xcertplay.media.EchoSelfTest.CONFIDENT) "Echo test done: calls will use a ${result.delayMillis} ms echo delay." else "Echo test done, but no clear echo path was found."); if (page == "settings") render() }
             } catch (error: Exception) {
                 runOnUiThread { echoTestStatus?.text = "Echo test failed: ${error.message}"; toast("Echo test failed: ${error.message}") }
             }
