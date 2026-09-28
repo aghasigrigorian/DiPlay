@@ -5,6 +5,7 @@
 - Android 10+ only lets DiPlay open itself from the background with *Display over other apps*; the settings page offers the permission, and without it DiPlay posts a notification to tap. Repeated triggers within 30 s count once; nothing happens while a CarPlay session runs.
 - Decision logic is covered by unit tests. Not yet validated on the DiLink 5.1 development car.
 - Phone calls: new *Car Bluetooth address* setting. iOS hands calls to CarPlay and drops the car's hands-free link only when it recognises the car's Bluetooth address in what DiPlay advertises; firmware that hides the address from apps got a synthetic one, and the car's own call screen then appeared next to CarPlay's (reported on a Song Plus, DiLink 4.0; likely the cause of the garbled call audio in #1). The address is now also read from the kernel where readable, the advertised value is written to the diagnostic log, and the home screen warns while the car's phone link stays connected during a session.
+- Calls through CarPlay no longer feed the car speakers back to the far end: the platform echo canceller and noise suppressor are attached to the call microphone where the firmware offers them, and the head unit is switched to in-communication mode for the duration of the call. Reported after routing calls to CarPlay on a Song Plus (the car's *Call Audio* Bluetooth toggle off): the other party heard themselves.
 
 # 0.2.0 — BYD navigation and connection improvements
 

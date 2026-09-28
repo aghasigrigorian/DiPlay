@@ -2786,6 +2786,7 @@ class CarPlayHostActivity : ComponentActivity() {
             onAudioDiagnostic = { message ->
                 diagnosticLog?.append(formattedLogLine(message, System.currentTimeMillis()))
             },
+            audioManager = getSystemService(android.media.AudioManager::class.java),
         )
     }
 

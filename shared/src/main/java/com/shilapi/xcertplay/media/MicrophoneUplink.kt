@@ -1,8 +1,12 @@
 package com.shilapi.xcertplay.media
 
 import android.media.AudioFormat as AndroidAudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.AudioEffect
+import android.media.audiofx.NoiseSuppressor
 import android.util.Log
 import com.shilapi.xcertplay.airplay.AudioCodecKind
 import com.shilapi.xcertplay.airplay.MicrophoneConfig
@@ -21,11 +25,22 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * The recorder runs only while the matching audio stream is active, so callers start this after
  * the first downlink audio packet and close it on stream teardown.
+ *
+ * For calls the head unit's microphone hears the far end coming out of the car speakers, and a
+ * certified accessory is expected to cancel that itself. The platform echo canceller and noise
+ * suppressor are attached to the recording session where the firmware offers them, and the audio
+ * mode is switched to in-communication for the duration of the call so the firmware's own voice
+ * processing engages. [audioManager] may be null on callers without a context; the effects still apply.
  */
-internal class MicrophoneUplink(private val config: MicrophoneConfig) : Closeable {
+internal class MicrophoneUplink(
+    private val config: MicrophoneConfig,
+    private val audioManager: AudioManager? = null,
+) : Closeable {
     private val running = AtomicBoolean(false)
     private val firstPacketLogged = AtomicBoolean(false)
     @Volatile private var recorder: AudioRecord? = null
+    @Volatile private var effects: List<AudioEffect> = emptyList()
+    @Volatile private var previousAudioMode: Int? = null
     @Volatile private var socket: DatagramSocket? = null
     @Volatile private var opusEncoder: OpusEncoder? = null
     private var thread: Thread? = null
@@ -107,6 +122,10 @@ internal class MicrophoneUplink(private val config: MicrophoneConfig) : Closeabl
         recorder = nextRecorder
         socket = nextSocket
         opusEncoder = nextEncoder
+        if (config.audioType == "telephony") {
+            effects = attachVoiceEffects(nextRecorder.audioSessionId)
+            enterCommunicationMode()
+        }
         return try {
             nextRecorder.startRecording()
             thread = Thread({ capture(nextRecorder, nextSocket) }, "carplay-mic").apply {
@@ -125,6 +144,50 @@ internal class MicrophoneUplink(private val config: MicrophoneConfig) : Closeabl
             release()
             false
         }
+    }
+
+    /** Platform echo cancellation and noise suppression on the capture session, where the firmware has them. */
+    private fun attachVoiceEffects(sessionId: Int): List<AudioEffect> {
+        val attached = mutableListOf<AudioEffect>()
+        val aec = if (AcousticEchoCanceler.isAvailable()) runCatching { AcousticEchoCanceler.create(sessionId) }.getOrNull() else null
+        val ns = if (NoiseSuppressor.isAvailable()) runCatching { NoiseSuppressor.create(sessionId) }.getOrNull() else null
+        for (effect in listOfNotNull(aec, ns)) {
+            val status = runCatching { effect.setEnabled(true) }.getOrDefault(AudioEffect.ERROR)
+            if (status == AudioEffect.SUCCESS) attached += effect else runCatching { effect.release() }
+        }
+        Log.i(
+            TAG,
+            "microphone voice effects echoCanceller=${describe(aec, attached)} " +
+                "noiseSuppressor=${describe(ns, attached)}",
+        )
+        return attached
+    }
+
+    private fun describe(effect: AudioEffect?, attached: List<AudioEffect>): String = when {
+        effect == null -> "unavailable"
+        effect in attached -> "on"
+        else -> "failed"
+    }
+
+    private fun enterCommunicationMode() {
+        val manager = audioManager ?: return
+        runCatching {
+            val current = manager.mode
+            if (current != AudioManager.MODE_IN_COMMUNICATION) {
+                previousAudioMode = current
+                manager.mode = AudioManager.MODE_IN_COMMUNICATION
+                Log.i(TAG, "audio mode in-communication for the call (was $current)")
+            }
+        }.onFailure { Log.w(TAG, "audio mode could not be changed", it) }
+    }
+
+    private fun leaveCommunicationMode() {
+        val manager = audioManager ?: return
+        val previous = previousAudioMode ?: return
+        previousAudioMode = null
+        runCatching {
+            if (manager.mode == AudioManager.MODE_IN_COMMUNICATION) manager.mode = previous
+        }.onFailure { Log.w(TAG, "audio mode could not be restored", it) }
     }
 
     private fun capture(recorder: AudioRecord, socket: DatagramSocket) {
@@ -235,6 +298,10 @@ internal class MicrophoneUplink(private val config: MicrophoneConfig) : Closeabl
     @Synchronized
     private fun release() {
         running.set(false)
+        val currentEffects = effects
+        effects = emptyList()
+        currentEffects.forEach { runCatching { it.release() } }
+        leaveCommunicationMode()
         val currentRecorder = recorder
         recorder = null
         try {

@@ -39,6 +39,8 @@ class AndroidMediaSink(
     onScreenStreamActiveChanged: ((Int, Boolean) -> Unit)? = null,
     private val mediaBufferMillis: Int = MediaAudioBuffer.DEFAULT_MILLIS,
     private val onAudioDiagnostic: (String) -> Unit = {},
+    /** Lets the call microphone switch the head unit into in-communication mode; optional. */
+    private val audioManager: android.media.AudioManager? = null,
 ) : MediaSink {
     private val screenStateLock = Any()
     private val activeScreenTypes = mutableSetOf<Int>()
@@ -130,7 +132,7 @@ class AndroidMediaSink(
     }
 
     override fun onMicrophoneStarted(type: Int, config: MicrophoneConfig) {
-        val uplink = microphoneUplinks.computeIfAbsent(type) { MicrophoneUplink(config) }
+        val uplink = microphoneUplinks.computeIfAbsent(type) { MicrophoneUplink(config, audioManager) }
         if (!uplink.start()) microphoneUplinks.remove(type, uplink)
     }
 
