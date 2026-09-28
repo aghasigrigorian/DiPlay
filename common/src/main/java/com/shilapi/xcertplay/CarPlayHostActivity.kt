@@ -2788,6 +2788,7 @@ class CarPlayHostActivity : ComponentActivity() {
             },
             audioManager = getSystemService(android.media.AudioManager::class.java),
             echoCancellation = com.shilapi.xcertplay.media.EchoCancellationMode.parse(DiPlayPreferences.echoCancellation(this)),
+            callVolumeBoostDb = DiPlayPreferences.callVolumeBoostDb(this),
         )
     }
 

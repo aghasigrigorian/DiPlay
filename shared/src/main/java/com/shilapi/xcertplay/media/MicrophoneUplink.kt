@@ -43,6 +43,7 @@ internal class MicrophoneUplink(
     @Volatile private var recorder: AudioRecord? = null
     @Volatile private var effects: List<AudioEffect> = emptyList()
     @Volatile private var previousAudioMode: Int? = null
+    @Volatile private var previousCallVolume: Int? = null
     @Volatile private var socket: DatagramSocket? = null
     @Volatile private var opusEncoder: OpusEncoder? = null
     private var thread: Thread? = null
@@ -203,10 +204,27 @@ internal class MicrophoneUplink(
                 Log.i(TAG, "audio mode in-communication for the call (was $current)")
             }
         }.onFailure { Log.w(TAG, "audio mode could not be changed", it) }
+        // The car's volume knob usually moves the media stream only; the call stream sits wherever the
+        // firmware left it. Run it at its maximum for the call and put it back afterwards.
+        runCatching {
+            val stream = AudioManager.STREAM_VOICE_CALL
+            val current = manager.getStreamVolume(stream)
+            val max = manager.getStreamMaxVolume(stream)
+            if (current < max) {
+                previousCallVolume = current
+                manager.setStreamVolume(stream, max, 0)
+                Log.i(TAG, "call stream volume $current -> $max for the call")
+            }
+        }.onFailure { Log.w(TAG, "call stream volume could not be changed", it) }
     }
 
     private fun leaveCommunicationMode() {
         val manager = audioManager ?: return
+        previousCallVolume?.let { volume ->
+            previousCallVolume = null
+            runCatching { manager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, volume, 0) }
+                .onFailure { Log.w(TAG, "call stream volume could not be restored", it) }
+        }
         val previous = previousAudioMode ?: return
         previousAudioMode = null
         runCatching {

@@ -9,6 +9,12 @@ class EchoReferenceTest {
     @After
     fun tearDown() = EchoReference.stop()
 
+    /** The first write of a call is padded to line up with playback; tests pull that padding away first. */
+    private fun drainPrefill(rate: Int) {
+        val padding = EchoReference.prefillSamples
+        if (padding > 0) EchoReference.pull(ShortArray(padding), padding, rate)
+    }
+
     private fun pcm(vararg samples: Int): ByteArray {
         val bytes = ByteArray(samples.size * 2)
         samples.forEachIndexed { i, s -> bytes[2 * i] = (s and 0xff).toByte(); bytes[2 * i + 1] = ((s shr 8) and 0xff).toByte() }
@@ -19,6 +25,7 @@ class EchoReferenceTest {
     fun samplesComeBackOldestFirst() {
         EchoReference.start(16_000)
         EchoReference.push(pcm(1, 2, 3, 4), 0, 8, 1, 16_000)
+        drainPrefill(16_000)
         val out = ShortArray(3)
         assertEquals(3, EchoReference.pull(out, 3, 16_000))
         assertArrayEquals(shortArrayOf(1, 2, 3), out)
@@ -29,6 +36,7 @@ class EchoReferenceTest {
     fun missingSamplesAreSilence() {
         EchoReference.start(16_000)
         EchoReference.push(pcm(5), 0, 2, 1, 16_000)
+        drainPrefill(16_000)
         val out = ShortArray(4) { 99 }
         assertEquals(1, EchoReference.pull(out, 4, 16_000))
         assertArrayEquals(shortArrayOf(5, 0, 0, 0), out)
@@ -38,6 +46,7 @@ class EchoReferenceTest {
     fun stereoIsDownmixed() {
         EchoReference.start(16_000)
         EchoReference.push(pcm(100, 300, -50, 50), 0, 8, 2, 16_000)
+        drainPrefill(16_000)
         val out = ShortArray(2)
         assertEquals(2, EchoReference.pull(out, 2, 16_000))
         assertArrayEquals(shortArrayOf(200, 0), out)
@@ -76,6 +85,6 @@ class EchoReferenceTest {
         EchoReference.push(pcm(*many), 0, many.size * 2, 1, 1_000)
         val out = ShortArray(1)
         assertEquals(1, EchoReference.pull(out, 1, 1_000))
-        assertEquals(160.toShort(), out[0]) // 2 100 samples + 60 of margin padding, capacity 2 000
+        assertEquals(100.toShort(), out[0]) // 60 padding + 2 100 samples into 2 000 of capacity: the oldest 160 go
     }
 }
