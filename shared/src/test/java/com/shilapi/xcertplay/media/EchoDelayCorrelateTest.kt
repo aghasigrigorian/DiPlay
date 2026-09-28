@@ -16,6 +16,7 @@ class EchoDelayCorrelateTest {
         val mic = ShortArray(far.size) { i -> val src = i - delay; (((if (src >= 0) far[src] * 0.4 else 0.0)) + random.nextInt(-300, 300)).toInt().toShort() }
         val estimate = EchoDelayEstimator.correlate(mic, far, rate, -300, 2_000)
         assertTrue("confidence ${estimate.confidence}", estimate.confidence > 0.6)
+        assertTrue("prominence ${estimate.prominence}", estimate.prominence > 4.0 && estimate.clear)
         assertTrue("delay ${estimate.delaySamples}", abs(estimate.delaySamples - delay) <= rate * 2 / 1000)
     }
 

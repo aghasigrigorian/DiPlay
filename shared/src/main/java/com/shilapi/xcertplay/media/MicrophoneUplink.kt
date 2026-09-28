@@ -398,6 +398,6 @@ internal class MicrophoneUplink(
         const val VOLUME_POLL_EVERY_READS = 8
 
         /** The reference is placed this much ahead of the calibrated echo. */
-        const val CALIBRATED_SETTLE_MILLIS = 40
+        const val CALIBRATED_SETTLE_MILLIS = 60
     }
 }

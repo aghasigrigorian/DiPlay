@@ -25,6 +25,7 @@ class EchoSelfTest(private val audioManager: AudioManager?) {
         val delayMillis: Int,
         val confidence: Double,
         val removalDb: Double?,
+        val calibrated: Boolean,
     )
 
     /** [clip] is 16-bit little-endian mono PCM at [SAMPLE_RATE]. Blocks for about 30 s; call off the main thread. */
@@ -135,17 +136,17 @@ class EchoSelfTest(private val audioManager: AudioManager?) {
      */
     private fun analyse(raw: ByteArray, writePositions: List<Long>, farEnd: ShortArray, onStatus: (String) -> Unit): Result {
         val mic = toShorts(raw)
-        val aligned = ShortArray(mic.size)
-        for ((f, writePos) in writePositions.withIndex()) {
-            val base = f * FRAME_SAMPLES
-            for (i in 0 until FRAME_SAMPLES) {
-                val index = writePos - FRAME_SAMPLES + i
-                aligned[base + i] = if (index in 0 until farEnd.size) farEnd[index.toInt()] else 0
-            }
+        // Both streams run on the same audio clock, so the far end is lined up once, from the write
+        // position at the first captured frame, and then advances sample for sample with the capture.
+        // Using the write position of every frame would add up to a frame of jitter and smear the peak.
+        val base = (writePositions.firstOrNull() ?: 0L) - FRAME_SAMPLES
+        val aligned = ShortArray(mic.size) { k ->
+            val index = base + k
+            if (index in 0 until farEnd.size) farEnd[index.toInt()] else 0
         }
         val estimate = EchoDelayEstimator.correlate(mic, aligned, SAMPLE_RATE, MIN_DELAY_MILLIS, MAX_DELAY_MILLIS)
         val delayMillis = estimate.delaySamples * 1000 / SAMPLE_RATE
-        val confident = estimate.confidence >= CONFIDENT
+        val confident = estimate.clear
         onStatus("Echo test: cancelling with a ${delayMillis} ms delay…")
         val leadSamples = if (confident) (estimate.delaySamples - SAMPLE_RATE * SETTLE_MILLIS / 1000).coerceAtLeast(0) else 0
         val tail = if (confident) SpeexEchoCanceller.CALIBRATED_TAIL_MILLIS else SpeexEchoCanceller.TAIL_MILLIS
@@ -170,13 +171,13 @@ class EchoSelfTest(private val audioManager: AudioManager?) {
             }
             val removal = canceller.removalDb()
             val summary = buildString {
-                append(if (confident) "echo delay ≈ $delayMillis ms (confidence ${"%.2f".format(estimate.confidence)}, calibrated)" else "no clear echo path found (best guess $delayMillis ms, confidence ${"%.2f".format(estimate.confidence)})")
+                append(if (confident) "echo delay ≈ $delayMillis ms (correlation ${"%.2f".format(estimate.confidence)}, peak ${"%.1f".format(estimate.prominence)}× the noise, calibrated)" else "no clear echo path found (best guess $delayMillis ms, correlation ${"%.2f".format(estimate.confidence)}, peak ${"%.1f".format(estimate.prominence)}×)")
                 append(" · canceller removes ")
                 append(removal?.let { "${"%.1f".format(it)} dB" } ?: "nothing (no far-end activity)")
                 append(" · tail $tail ms · ${mic.size / SAMPLE_RATE} s recorded")
             }
             Log.i(TAG, "echo test: $summary")
-            return Result(summary, raw, cleaned, SAMPLE_RATE, delayMillis, estimate.confidence, removal)
+            return Result(summary, raw, cleaned, SAMPLE_RATE, delayMillis, estimate.confidence, removal, confident)
         } finally {
             canceller.close()
         }
@@ -195,10 +196,7 @@ class EchoSelfTest(private val audioManager: AudioManager?) {
         private const val TAIL_MILLIS = 1_000L
         private const val MIN_DELAY_MILLIS = -300
         private const val MAX_DELAY_MILLIS = 2_000
-        private const val SETTLE_MILLIS = 40
-
-        /** Correlation at or above this counts as a found echo path. */
-        const val CONFIDENT = 0.5
+        private const val SETTLE_MILLIS = 60
 
         private val running = AtomicBoolean(false)
         val isRunning: Boolean get() = running.get()

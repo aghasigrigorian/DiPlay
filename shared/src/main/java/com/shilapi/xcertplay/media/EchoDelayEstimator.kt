@@ -18,7 +18,10 @@ internal class EchoDelayEstimator(
     private val maxEarlyMillis: Int = 300,
 ) {
     /** A measurement: [delaySamples] is the echo delay relative to the reference position of the frame, at full rate. */
-    data class Estimate(val delaySamples: Int, val confidence: Double)
+    data class Estimate(val delaySamples: Int, val confidence: Double, val prominence: Double = 0.0) {
+        /** A clear peak counts even when road noise keeps the absolute correlation low. */
+        val clear: Boolean get() = confidence >= CLEAR_CONFIDENCE || prominence >= CLEAR_PROMINENCE
+    }
 
     private val decimatedRate = sampleRate / decimation
     private val windowSamples = decimatedRate * windowMillis / 1000
@@ -97,6 +100,11 @@ internal class EchoDelayEstimator(
         /** Mean square below this is treated as silence (about -50 dBFS). */
         private const val MIN_ENERGY = 1_000.0
 
+        const val CLEAR_CONFIDENCE = 0.35
+
+        /** Peak divided by the mean absolute correlation over all lags searched. */
+        const val CLEAR_PROMINENCE = 4.0
+
         /**
          * Offline: how much later than [aligned] the echo appears in [mic]. Both are 16-bit mono at
          * [sampleRate] and describe the same stretch of time; [aligned] is the far end as it was
@@ -129,9 +137,13 @@ internal class EchoDelayEstimator(
             val step = maxOf(1, rate * 5 / 1000)
             var bestLag = 0
             var best = 0.0
+            var sumAbs = 0.0
+            var count = 0
             var lag = minLag
             while (lag <= maxLag) {
                 val s = score(lag)
+                sumAbs += kotlin.math.abs(s)
+                count++
                 if (s > best) { best = s; bestLag = lag }
                 lag += step
             }
@@ -140,7 +152,8 @@ internal class EchoDelayEstimator(
                 val s = score(fine)
                 if (s > best) { best = s; bestLag = fine }
             }
-            return Estimate(bestLag * decimation, best)
+            val prominence = if (count == 0 || sumAbs <= 0.0) 0.0 else best / (sumAbs / count)
+            return Estimate(bestLag * decimation, best, prominence)
         }
     }
 }

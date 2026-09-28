@@ -328,8 +328,8 @@ class DiPlayActivity : ComponentActivity() {
                 val clip = com.shilapi.xcertplay.media.EchoSelfTest.pcmFromWav(wav, com.shilapi.xcertplay.media.EchoSelfTest.SAMPLE_RATE)
                 val manager = getSystemService(android.media.AudioManager::class.java)
                 val result = com.shilapi.xcertplay.media.EchoSelfTest(manager).run(clip) { status -> runOnUiThread { echoTestStatus?.text = status } }
-                if (result.confidence >= com.shilapi.xcertplay.media.EchoSelfTest.CONFIDENT) DiPlayPreferences.saveEchoDelayMillis(this, result.delayMillis)
-                runOnUiThread { toast(if (result.confidence >= com.shilapi.xcertplay.media.EchoSelfTest.CONFIDENT) "Echo test done: calls will use a ${result.delayMillis} ms echo delay." else "Echo test done, but no clear echo path was found."); if (page == "settings") render() }
+                if (result.calibrated) DiPlayPreferences.saveEchoDelayMillis(this, result.delayMillis)
+                runOnUiThread { toast(if (result.calibrated) "Echo test done: calls will use a ${result.delayMillis} ms echo delay." else "Echo test done, but no clear echo path was found."); if (page == "settings") render() }
             } catch (error: Exception) {
                 runOnUiThread { echoTestStatus?.text = "Echo test failed: ${error.message}"; toast("Echo test failed: ${error.message}") }
             }
