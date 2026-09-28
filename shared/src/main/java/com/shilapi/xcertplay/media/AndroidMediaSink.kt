@@ -42,8 +42,6 @@ class AndroidMediaSink(
     /** Lets the call microphone switch the head unit into in-communication mode; optional. */
     private val audioManager: android.media.AudioManager? = null,
     private val echoCancellation: EchoCancellationMode = EchoCancellationMode.AUTO,
-    /** Extra gain on the far end's voice, in dB, so a call sits at the level of music without touching the knob. */
-    private val callVolumeBoostDb: Int = 0,
     private val callVolumeMemory: CallVolumeMemory? = null,
 ) : MediaSink {
     private val screenStateLock = Any()
@@ -178,8 +176,7 @@ class AndroidMediaSink(
         val existing = audioRenderers[type]
         if (existing?.format == format) return existing
         existing?.close()
-        val gain = if (format.audioType == "telephony" && callVolumeBoostDb > 0) Math.pow(10.0, callVolumeBoostDb / 20.0).toFloat() else 1f
-        return AudioRenderer(format, advancedAudioChannelMapping, mediaBufferMillis, onAudioDiagnostic, gain).also { audioRenderers[type] = it }
+        return AudioRenderer(format, advancedAudioChannelMapping, mediaBufferMillis, onAudioDiagnostic).also { audioRenderers[type] = it }
     }
 }
 
@@ -506,7 +503,6 @@ private class AudioRenderer(
     private val advancedAudioChannelMapping: Boolean,
     private val mediaBufferMillis: Int,
     private val report: (String) -> Unit,
-    private val gain: Float = 1f,
 ) : Closeable {
     private data class AudioPacket(val rtp: ByteArray, val sample: Int)
 
@@ -878,7 +874,6 @@ private class AudioRenderer(
             applyFadeIn(data, offset, length)
             fadeApplied = true
         }
-        if (gain != 1f) applyGain(data, offset, length, gain)
         var written = 0
         while (written < length && running) {
             val writeLength = if (playbackStarted) {
@@ -905,19 +900,6 @@ private class AudioRenderer(
                     Log.i(TAG, "audio playback started type=${format.payloadType}")
                 }
             }
-        }
-    }
-
-    /** Scales 16-bit little-endian PCM in place, clamping at full scale. */
-    private fun applyGain(data: ByteArray, offset: Int, length: Int, gain: Float) {
-        var i = offset
-        val end = offset + length - (length % 2)
-        while (i < end) {
-            val sample = ((data[i].toInt() and 0xff) or (data[i + 1].toInt() shl 8)).toShort().toInt()
-            val scaled = (sample * gain).toInt().coerceIn(-32768, 32767)
-            data[i] = (scaled and 0xff).toByte()
-            data[i + 1] = ((scaled shr 8) and 0xff).toByte()
-            i += 2
         }
     }
 

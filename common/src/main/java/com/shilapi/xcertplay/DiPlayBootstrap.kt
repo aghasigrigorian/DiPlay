@@ -72,10 +72,6 @@ internal object DiPlayPreferences {
     fun saveEchoCancellation(context: Context, value: String) {
         prefs(context).edit().putString("echo_cancellation", value).apply()
     }
-    fun callVolumeBoostDb(context: Context): Int = prefs(context).getInt("call_volume_boost_db", 6)
-    fun saveCallVolumeBoostDb(context: Context, value: Int) {
-        prefs(context).edit().putInt("call_volume_boost_db", value).apply()
-    }
     fun rememberCallVolume(context: Context) = prefs(context).getBoolean("remember_call_volume", true)
     fun saveRememberCallVolume(context: Context, value: Boolean) {
         prefs(context).edit().putBoolean("remember_call_volume", value).apply()

@@ -299,11 +299,7 @@ class DiPlayActivity : ComponentActivity() {
         choice(card, "Echo cancellation", listOf("Automatic · head unit first, app if missing", "Always in the app", "Off"),
             modes.indexOf(DiPlayPreferences.echoCancellation(this)).coerceAtLeast(0)) { DiPlayPreferences.saveEchoCancellation(this, modes[it]) }
         card.addView(label("Stops the other party hearing themselves through the car speakers. Changes apply to the next connection.", 14, MUTED).apply { setPadding(0, dp(10), 0, 0) })
-        val boosts = listOf(0, 6, 12)
-        choice(card, "Call volume", listOf("Normal", "Louder · +6 dB", "Loudest · +12 dB"),
-            boosts.indexOf(DiPlayPreferences.callVolumeBoostDb(this)).coerceAtLeast(0)) { DiPlayPreferences.saveCallVolumeBoostDb(this, boosts[it]) }
-        card.addView(label("Raises the other party's voice so a call sits at the level of music, without turning the car's volume up and getting blasted when the music returns. The car's call stream also runs at its maximum during a call.", 14, MUTED).apply { setPadding(0, dp(10), 0, 0) })
-        toggle(card, "Remember call volume separately", "Like the car's own phone: the knob sets a call level that is kept for the next call, and the music comes back at its old level when the call ends.", DiPlayPreferences.rememberCallVolume(this)) { DiPlayPreferences.saveRememberCallVolume(this, it) }
+        toggle(card, "Remember call volume separately", "Like the car's own phone: the knob sets a call level that is kept for the next call, and the music comes back at its old level when the call ends. The car's call stream runs at its maximum during a call.", DiPlayPreferences.rememberCallVolume(this)) { DiPlayPreferences.saveRememberCallVolume(this, it) }
     }
 
     private fun editCarBluetoothAddress() {
