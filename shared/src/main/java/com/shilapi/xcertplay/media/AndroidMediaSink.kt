@@ -44,6 +44,7 @@ class AndroidMediaSink(
     private val echoCancellation: EchoCancellationMode = EchoCancellationMode.AUTO,
     /** Extra gain on the far end's voice, in dB, so a call sits at the level of music without touching the knob. */
     private val callVolumeBoostDb: Int = 0,
+    private val callVolumeMemory: CallVolumeMemory? = null,
 ) : MediaSink {
     private val screenStateLock = Any()
     private val activeScreenTypes = mutableSetOf<Int>()
@@ -135,7 +136,7 @@ class AndroidMediaSink(
     }
 
     override fun onMicrophoneStarted(type: Int, config: MicrophoneConfig) {
-        val uplink = microphoneUplinks.computeIfAbsent(type) { MicrophoneUplink(config, audioManager, echoCancellation) }
+        val uplink = microphoneUplinks.computeIfAbsent(type) { MicrophoneUplink(config, audioManager, echoCancellation, callVolumeMemory) }
         if (!uplink.start()) microphoneUplinks.remove(type, uplink)
     }
 

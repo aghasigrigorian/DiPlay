@@ -76,6 +76,10 @@ internal object DiPlayPreferences {
     fun saveCallVolumeBoostDb(context: Context, value: Int) {
         prefs(context).edit().putInt("call_volume_boost_db", value).apply()
     }
+    fun rememberCallVolume(context: Context) = prefs(context).getBoolean("remember_call_volume", true)
+    fun saveRememberCallVolume(context: Context, value: Boolean) {
+        prefs(context).edit().putBoolean("remember_call_volume", value).apply()
+    }
     fun lastCallSummary(context: Context): String? = prefs(context).getString("last_call_summary", null)
     fun saveLastCallSummary(context: Context, value: String) {
         prefs(context).edit().putString("last_call_summary", value).apply()

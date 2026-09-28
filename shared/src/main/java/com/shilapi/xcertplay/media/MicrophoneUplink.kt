@@ -36,6 +36,7 @@ internal class MicrophoneUplink(
     private val config: MicrophoneConfig,
     private val audioManager: AudioManager? = null,
     private val echoCancellation: EchoCancellationMode = EchoCancellationMode.AUTO,
+    private val callVolumeMemory: CallVolumeMemory? = null,
 ) : Closeable {
     @Volatile private var softwareCanceller: SpeexEchoCanceller? = null
     private val running = AtomicBoolean(false)
@@ -135,6 +136,7 @@ internal class MicrophoneUplink(
             } else if (echoCancellation == EchoCancellationMode.APP) {
                 enterCommunicationMode()
             }
+            callVolumeMemory?.onCallStarted()
             val platformOn = effects.any { it is AcousticEchoCanceler }
             val wantSoftware = when (echoCancellation) {
                 EchoCancellationMode.APP -> true
@@ -237,8 +239,10 @@ internal class MicrophoneUplink(
         val readBuffer = ByteArray(maxOf(frame.size, MIN_READ_BYTES))
         val counters = MicrophoneCounters()
         var filled = 0
+        var reads = 0
         try {
             while (running.get()) {
+                if (++reads % VOLUME_POLL_EVERY_READS == 0) callVolumeMemory?.poll()
                 val count = recorder.read(readBuffer, 0, readBuffer.size, AudioRecord.READ_BLOCKING)
                 if (count < 0) {
                     if (running.get()) Log.e(TAG, "microphone read failed code=$count")
@@ -344,6 +348,12 @@ internal class MicrophoneUplink(
         val currentEffects = effects
         effects = emptyList()
         currentEffects.forEach { runCatching { it.release() } }
+        callVolumeMemory?.let { memory ->
+            memory.onCallEnded()
+            if (config.audioType == "telephony" && CallMicrophoneStatus.lastCallSummary?.contains("media volume") == false) {
+                CallMicrophoneStatus.lastCallSummary = (CallMicrophoneStatus.lastCallSummary ?: "") + " · ${memory.summary()}"
+            }
+        }
         val currentCanceller = softwareCanceller
         softwareCanceller = null
         if (currentCanceller != null) {
@@ -377,5 +387,6 @@ internal class MicrophoneUplink(
         const val TAG = "xcertplay-usb"
         const val MIN_READ_BYTES = 2_048
         const val CLOSE_JOIN_MILLIS = 500L
+        const val VOLUME_POLL_EVERY_READS = 8
     }
 }
